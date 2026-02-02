@@ -30,6 +30,8 @@ class PyGit2Repository(GitRepository):
 
     def get_tags(self, pattern: str | None = None) -> list[str]:
         """Get all tags, optionally filtered by pattern."""
+        from auto_version.models import Version
+
         tags = []
         for ref in self._repo.listall_references():
             if ref.startswith("refs/tags/"):
@@ -37,8 +39,22 @@ class PyGit2Repository(GitRepository):
                 if pattern is None or self._matches_pattern(tag_name, pattern):
                     tags.append(tag_name)
 
-        # Sort by tag name (reverse)
-        return sorted(tags, reverse=True)
+        # Sort by semantic version (newest first)
+        # Extract version from tag name and use for sorting
+        def extract_version(tag: str) -> tuple[int, int, int]:
+            """Extract version numbers for sorting."""
+            try:
+                # Try to find version pattern like x.y.z in the tag
+                import re
+                match = re.search(r'(\d+)\.(\d+)\.(\d+)', tag)
+                if match:
+                    return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+            except (ValueError, AttributeError):
+                pass
+            # Fallback to (0, 0, 0) for non-semver tags
+            return (0, 0, 0)
+
+        return sorted(tags, key=extract_version, reverse=True)
 
     def get_commits_since(
         self, since_ref: str | None, path_filters: list[str] | None = None

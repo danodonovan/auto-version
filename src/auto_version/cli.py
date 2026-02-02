@@ -249,5 +249,70 @@ def status(config_path: Path | None) -> None:
         sys.exit(1)
 
 
+@main.command()
+@click.argument(
+    "config_path",
+    type=click.Path(exists=True, path_type=Path),
+    required=False,
+)
+def show_version(config_path: Path | None) -> None:
+    """Show the current version for a package.
+
+    CONFIG_PATH: Path to pyproject.toml (optional, defaults to ./pyproject.toml)
+
+    This command outputs only the version number (e.g., "1.2.3") to stdout,
+    making it suitable for use in scripts and CI/CD pipelines.
+
+    Examples:
+
+        \b
+        # Get current version
+        auto-version show-version
+
+        \b
+        # Get version for specific package
+        auto-version show-version packages/mypackage/pyproject.toml
+
+        \b
+        # Use in shell script
+        VERSION=$(auto-version show-version)
+    """
+    try:
+        # Find config file
+        if config_path is None:
+            config_path = Path.cwd() / "pyproject.toml"
+
+        if not config_path.exists():
+            click.echo("Error: No pyproject.toml found", err=True)
+            sys.exit(1)
+
+        # Load configuration
+        config = Config.from_file(config_path)
+        repo = PyGit2Repository(config.package_root)
+
+        # Find the latest tag matching the format
+        # Convert tag_format to glob pattern (e.g., "kg-{version}" -> "kg-*")
+        tag_pattern = config.tag_format.replace("{version}", "*")
+        tags = repo.get_tags(tag_pattern)
+
+        if tags:
+            # Tags are already sorted newest first
+            latest_tag = tags[0]
+            # Extract version from tag using the tag_format
+            # tag_format is like "kg-{version}" so we need to strip the prefix
+            tag_prefix = config.tag_format.replace("{version}", "")
+            version = latest_tag.replace(tag_prefix, "")
+            click.echo(version)
+        else:
+            # No tag found, get version from config files
+            from auto_version.versioning.reader import read_version
+            version = read_version(config)
+            click.echo(str(version))
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
 if __name__ == "__main__":
     main()
