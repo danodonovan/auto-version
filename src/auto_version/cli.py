@@ -1,0 +1,253 @@
+"""Command-line interface for auto-version."""
+
+import sys
+from pathlib import Path
+
+import click
+
+from auto_version.config import Config
+from auto_version.git.pygit2_impl import PyGit2Repository
+from auto_version.models import VersionBump
+from auto_version.orchestration.release import ReleaseOrchestrator
+
+
+@click.group()
+@click.version_option()
+def main() -> None:
+    """Auto-version: Automatic release management for Python monorepos."""
+    pass
+
+
+@main.command()
+@click.argument(
+    "config_path",
+    type=click.Path(exists=True, path_type=Path),
+    required=False,
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Show what would be done without actually doing it",
+)
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    help="Show detailed output",
+)
+def release(
+    config_path: Path | None,
+    dry_run: bool,
+    verbose: bool,
+) -> None:
+    """Create a new release for a package.
+
+    CONFIG_PATH: Path to pyproject.toml (optional, defaults to ./pyproject.toml)
+
+    Examples:
+
+        \b
+        # Release from current directory
+        auto-version release
+
+        \b
+        # Release a specific package
+        auto-version release packages/mypackage/pyproject.toml
+
+        \b
+        # Dry run to see what would happen
+        auto-version release --dry-run
+    """
+    try:
+        # Find config file
+        if config_path is None:
+            config_path = Path.cwd() / "pyproject.toml"
+            if not config_path.exists():
+                click.echo(
+                    "Error: No pyproject.toml found in current directory. "
+                    "Please specify a path or run from a package directory.",
+                    err=True,
+                )
+                sys.exit(1)
+
+        # Load configuration
+        if verbose:
+            click.echo(f"Loading configuration from {config_path}")
+
+        config = Config.from_file(config_path)
+
+        # Initialize git repository
+        if verbose:
+            click.echo(f"Initializing git repository from {config.package_root}")
+
+        repo = PyGit2Repository(config.package_root)
+
+        # Create orchestrator and run release
+        orchestrator = ReleaseOrchestrator(repo, config)
+
+        if dry_run:
+            click.echo("🔍 Dry run mode - no changes will be made\n")
+
+        if verbose:
+            click.echo("Analyzing commits and calculating version bump...")
+
+        result = orchestrator.release(dry_run=dry_run)
+
+        # Display results
+        if result.bump_type == VersionBump.NONE:
+            click.echo(f"✓ No release needed for {result.package_name}")
+            click.echo(f"  Current version: {result.old_version}")
+            click.echo(f"  No releasable commits found since last release")
+            if verbose and result.commits_included:
+                click.echo(f"\n  Commits analyzed: {len(result.commits_included)}")
+                for commit in result.commits_included:
+                    click.echo(f"    - {commit.short_sha}: {commit.description}")
+            sys.exit(2)  # Exit code 2 = no changes
+
+        click.echo(
+            f"🎉 Release {'planned' if dry_run else 'completed'} for {result.package_name}"
+        )
+        click.echo(
+            f"  {result.old_version} → {result.new_version} ({result.bump_type.value} bump)"
+        )
+        click.echo(f"  Tag: {result.tag}")
+
+        if not dry_run:
+            click.echo(f"  Commit: {result.commit_sha[:7]}")
+
+        if verbose:
+            click.echo(f"\n  Commits included ({len(result.commits_included)}):")
+            for commit in result.commits_included:
+                commit_type = commit.commit_type or "other"
+                click.echo(
+                    f"    [{commit_type}] {commit.short_sha}: {commit.description}"
+                )
+
+            if dry_run:
+                # Show what would be changed
+                click.echo("\n  📝 Changes that would be made:")
+
+                # Show version file updates
+                click.echo(f"\n  Version files:")
+                for spec in config.version_toml:
+                    click.echo(f"    {spec}")
+                    click.echo(f"      {result.old_version} → {result.new_version}")
+
+                for spec in config.version_variables:
+                    click.echo(f"    {spec}")
+                    click.echo(f"      {result.old_version} → {result.new_version}")
+
+                # Show changelog
+                click.echo(f"\n  Changelog ({config.changelog_path}):")
+                click.echo(f"    New section: v{result.new_version}")
+
+                # Group commits by type for preview
+                from collections import defaultdict
+                commits_by_type = defaultdict(list)
+                for commit in result.commits_included:
+                    if commit.commit_type == "feat":
+                        commits_by_type["Feature"].append(commit)
+                    elif commit.commit_type == "fix":
+                        commits_by_type["Fix"].append(commit)
+                    elif commit.commit_type == "docs":
+                        commits_by_type["Documentation"].append(commit)
+                    else:
+                        commits_by_type["Other"].append(commit)
+
+                for section, commits in sorted(commits_by_type.items()):
+                    click.echo(f"    ### {section}")
+                    for commit in commits[:3]:  # Show first 3
+                        click.echo(f"    * {commit.description} ([`{commit.short_sha}`])")
+                    if len(commits) > 3:
+                        click.echo(f"    ... and {len(commits) - 3} more")
+
+                # Show build command if configured
+                if config.build_command:
+                    build_cmd = config.build_command.replace("{version}", str(result.new_version))
+                    click.echo(f"\n  Build command:")
+                    click.echo(f"    {build_cmd}")
+                    if config.assets:
+                        click.echo(f"    Additional assets: {', '.join(config.assets)}")
+
+                # Show commit and tag
+                commit_msg = config.commit_message.replace("{version}", str(result.new_version))
+                total_files = len(config.version_toml) + len(config.version_variables) + 1 + len(config.assets)
+                click.echo(f"\n  Git commit:")
+                click.echo(f"    Message: {commit_msg}")
+                click.echo(f"    Files: {total_files} files")
+
+                click.echo(f"\n  Git tag:")
+                click.echo(f"    Name: {result.tag}")
+                click.echo(f"    Message: Release {result.new_version}")
+
+        if dry_run:
+            click.echo("\n💡 Run without --dry-run to create the release")
+            click.echo("   Then push with: git push && git push --tags")
+        else:
+            click.echo("\n💡 Push the release:")
+            click.echo(f"   git push && git push origin {result.tag}")
+
+    except FileNotFoundError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    except ValueError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(3)
+    except Exception as e:
+        click.echo(f"Unexpected error: {e}", err=True)
+        if verbose:
+            import traceback
+
+            traceback.print_exc()
+        sys.exit(1)
+
+
+@main.command()
+@click.argument(
+    "config_path",
+    type=click.Path(exists=True, path_type=Path),
+    required=False,
+)
+def status(config_path: Path | None) -> None:
+    """Show the current release status for a package.
+
+    CONFIG_PATH: Path to pyproject.toml (optional, defaults to ./pyproject.toml)
+    """
+    try:
+        # Find config file
+        if config_path is None:
+            config_path = Path.cwd() / "pyproject.toml"
+
+        if not config_path.exists():
+            click.echo("Error: No pyproject.toml found", err=True)
+            sys.exit(1)
+
+        # Load configuration
+        config = Config.from_file(config_path)
+        repo = PyGit2Repository(config.package_root)
+
+        # Create orchestrator
+        orchestrator = ReleaseOrchestrator(repo, config)
+
+        # Do a dry run to get status
+        result = orchestrator.release(dry_run=True)
+
+        click.echo(f"Package: {result.package_name}")
+        click.echo(f"Current version: {result.old_version}")
+
+        if result.bump_type == VersionBump.NONE:
+            click.echo("Status: ✓ Up to date (no unreleased changes)")
+        else:
+            click.echo(f"Status: ⚠ Unreleased changes detected")
+            click.echo(
+                f"Next version: {result.new_version} ({result.bump_type.value} bump)"
+            )
+            click.echo(f"Commits: {len(result.commits_included)}")
+
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
