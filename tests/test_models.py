@@ -72,3 +72,16 @@ def test_version_comparison():
     assert v1 <= v2
     assert v2 > v1
     assert v3 >= v2
+
+
+def test_version_from_string():
+    """Test Version.from_string is an alias for parse."""
+    v1 = Version.from_string("1.2.3")
+    assert v1.major == 1
+    assert v1.minor == 2
+    assert v1.patch == 3
+
+    v2 = Version.from_string("v4.5.6")
+    assert v2.major == 4
+    assert v2.minor == 5
+    assert v2.patch == 6

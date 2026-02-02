@@ -46,9 +46,14 @@ class PyGit2Repository(GitRepository):
             try:
                 # Try to find version pattern like x.y.z in the tag
                 import re
-                match = re.search(r'(\d+)\.(\d+)\.(\d+)', tag)
+
+                match = re.search(r"(\d+)\.(\d+)\.(\d+)", tag)
                 if match:
-                    return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+                    return (
+                        int(match.group(1)),
+                        int(match.group(2)),
+                        int(match.group(3)),
+                    )
             except (ValueError, AttributeError):
                 pass
             # Fallback to (0, 0, 0) for non-semver tags

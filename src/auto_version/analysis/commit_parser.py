@@ -45,4 +45,5 @@ def parse_conventional_commit(commit: CommitInfo) -> CommitInfo:
         body=commit.body,
         timestamp=commit.timestamp,
         affected_files=commit.affected_files,
+        breaking=breaking,
     )

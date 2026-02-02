@@ -29,6 +29,11 @@ def calculate_version_bump(
             has_patch = True
             continue
 
+        # Breaking changes always trigger a major bump
+        if commit.breaking:
+            has_major = True
+            continue
+
         commit_type = commit.commit_type
 
         if commit_type in options.major_tags:

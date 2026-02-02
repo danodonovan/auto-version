@@ -137,9 +137,9 @@ class ReleaseOrchestrator:
 
     def _find_latest_tag(self) -> str | None:
         """Find the most recent release tag for this package."""
-        # Get all tags matching our format
-        package_name = self.config.get_package_name()
-        pattern = f"{package_name}-*"
+        # Get all tags matching our format by converting tag_format to glob pattern
+        # e.g., "kg-{version}" -> "kg-*", "v{version}" -> "v*", "pkg/v{version}-release" -> "pkg/v*-release"
+        pattern = self.config.tag_format.replace("{version}", "*")
         tags = self.repo.get_tags(pattern)
 
         if not tags:

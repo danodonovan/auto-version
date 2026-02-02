@@ -38,6 +38,11 @@ class Version:
         except ValueError as e:
             raise ValueError(f"Invalid version format: {version_str}") from e
 
+    @classmethod
+    def from_string(cls, version_str: str) -> "Version":
+        """Alias for parse() - parse version string like '1.2.3' or 'v1.2.3'."""
+        return cls.parse(version_str)
+
     def bump(self, bump_type: VersionBump) -> "Version":
         """Return a new version with the specified bump applied."""
         if bump_type == VersionBump.MAJOR:
@@ -91,6 +96,7 @@ class CommitInfo:
     body: str
     timestamp: datetime
     affected_files: list[Path]
+    breaking: bool = False  # True if commit contains breaking changes
 
     @property
     def is_conventional(self) -> bool:

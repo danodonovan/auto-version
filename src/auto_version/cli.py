@@ -143,6 +143,7 @@ def release(
 
                 # Group commits by type for preview
                 from collections import defaultdict
+
                 commits_by_type = defaultdict(list)
                 for commit in result.commits_included:
                     if commit.commit_type == "feat":
@@ -157,21 +158,32 @@ def release(
                 for section, commits in sorted(commits_by_type.items()):
                     click.echo(f"    ### {section}")
                     for commit in commits[:3]:  # Show first 3
-                        click.echo(f"    * {commit.description} ([`{commit.short_sha}`])")
+                        click.echo(
+                            f"    * {commit.description} ([`{commit.short_sha}`])"
+                        )
                     if len(commits) > 3:
                         click.echo(f"    ... and {len(commits) - 3} more")
 
                 # Show build command if configured
                 if config.build_command:
-                    build_cmd = config.build_command.replace("{version}", str(result.new_version))
+                    build_cmd = config.build_command.replace(
+                        "{version}", str(result.new_version)
+                    )
                     click.echo(f"\n  Build command:")
                     click.echo(f"    {build_cmd}")
                     if config.assets:
                         click.echo(f"    Additional assets: {', '.join(config.assets)}")
 
                 # Show commit and tag
-                commit_msg = config.commit_message.replace("{version}", str(result.new_version))
-                total_files = len(config.version_toml) + len(config.version_variables) + 1 + len(config.assets)
+                commit_msg = config.commit_message.replace(
+                    "{version}", str(result.new_version)
+                )
+                total_files = (
+                    len(config.version_toml)
+                    + len(config.version_variables)
+                    + 1
+                    + len(config.assets)
+                )
                 click.echo(f"\n  Git commit:")
                 click.echo(f"    Message: {commit_msg}")
                 click.echo(f"    Files: {total_files} files")
@@ -298,14 +310,19 @@ def show_version(config_path: Path | None) -> None:
         if tags:
             # Tags are already sorted newest first
             latest_tag = tags[0]
-            # Extract version from tag using the tag_format
-            # tag_format is like "kg-{version}" so we need to strip the prefix
-            tag_prefix = config.tag_format.replace("{version}", "")
-            version = latest_tag.replace(tag_prefix, "")
-            click.echo(version)
+            # Extract version from tag using proper parsing
+            version = config.parse_tag_version(latest_tag)
+            if version:
+                click.echo(version)
+            else:
+                click.echo(
+                    f"Error: Failed to parse version from tag {latest_tag}", err=True
+                )
+                sys.exit(1)
         else:
             # No tag found, get version from config files
             from auto_version.versioning.reader import read_version
+
             version = read_version(config)
             click.echo(str(version))
 
