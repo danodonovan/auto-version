@@ -63,7 +63,7 @@ class ReleaseOrchestrator:
 
         # 5. Calculate new version
         current_version = self._get_current_version(latest_tag)
-        new_version = current_version.bump(bump_type)
+        new_version = self._compute_new_version(current_version, bump_type)
 
         # 6. Check if this version already exists
         new_tag = self.config.format_tag(str(new_version))
@@ -135,6 +135,20 @@ class ReleaseOrchestrator:
             dry_run=False,
         )
 
+    def get_latest_version(self) -> Version | None:
+        """Return the latest released version (PEP 440 ordered), or None if untagged.
+
+        Unlike reading ``get_tags()[0]`` directly, this honours PEP 440 ordering
+        so pre-releases are ranked correctly (e.g. 1.0.0b1 over 0.11.0, and below 1.0.0).
+        """
+        latest_tag = self._find_latest_tag()
+        if latest_tag is None:
+            return None
+        version_str = self.config.parse_tag_version(latest_tag)
+        if not version_str:
+            return None
+        return Version.parse(version_str)
+
     def _find_latest_tag(self) -> str | None:
         """Find the most recent release tag for this package."""
         # Get all tags matching our format by converting tag_format to glob pattern
@@ -173,6 +187,68 @@ class ReleaseOrchestrator:
 
         # No tag found, default to 0.0.0
         return Version(0, 0, 0)
+
+    def _compute_new_version(self, base: Version, bump_type: VersionBump) -> Version:
+        """Compute the next version, honouring the pre-release workflow config.
+
+        Four cases (see the pre-release spec):
+          1. Start a line   — token set, and base is final (or release_as forces it).
+          2. Iterate a line — token set, base is a pre-release on the same token.
+          3. Channel change — token set, base is a pre-release on a different token.
+          4. Graduate       — token unset, base is a pre-release: drop the pre-release.
+          5. Normal         — token unset, base is final: standard bump (unchanged).
+        """
+        token = self.config.prerelease_token
+
+        if token is None:
+            if base.is_prerelease:
+                # Graduate: 1.0.0b2 -> 1.0.0
+                return base.base_version()
+            # Normal: standard X.Y.Z bump
+            return base.bump(bump_type)
+
+        # A pre-release channel is active.
+        if base.is_prerelease and not self.config.release_as:
+            # Iterate (same token) or channel change (different token); in both
+            # cases the base release is fixed and the number comes from existing tags.
+            target = base.base_version()
+        elif self.config.release_as:
+            # Start a line at an explicitly forced base.
+            target = Version.parse(self.config.release_as)
+        else:
+            # Start a line from a commit-derived bump of a final base.
+            target = base.bump(bump_type)
+
+        number = self._next_prerelease_number(target, token)
+        return target.with_prerelease(token, number)
+
+    def _next_prerelease_number(self, target: Version, token: str) -> int:
+        """Next pre-release number for ``target``+``token``, scanning existing tags.
+
+        Returns ``max(existing numbers) + 1`` so a re-run after a partial release
+        continues the sequence (e.g. picks ``b3`` when ``b1``/``b2`` exist) rather
+        than colliding, or ``0`` when the line has no tags yet.
+        """
+        pattern = self.config.tag_format.replace("{version}", "*")
+        target_base = target.base_version()
+
+        numbers = []
+        for tag in self.repo.get_tags(pattern):
+            version_str = self.config.parse_tag_version(tag)
+            if not version_str:
+                continue
+            try:
+                version = Version.parse(version_str)
+            except ValueError:
+                continue
+            if (
+                version.pre is not None
+                and version.pre[0] == token
+                and version.base_version() == target_base
+            ):
+                numbers.append(version.pre[1])
+
+        return max(numbers) + 1 if numbers else 0
 
     def _run_build_command(self, command: str, version: Version) -> None:
         """Run build command after version update.

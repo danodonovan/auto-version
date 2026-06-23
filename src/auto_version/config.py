@@ -41,6 +41,10 @@ class Config:
         default_factory=CommitParserOptions
     )
 
+    # Pre-release workflow (both optional; absent => standard X.Y.Z behaviour)
+    prerelease_token: str | None = None  # "a" | "b" | "rc"
+    release_as: str | None = None  # forces the base release, e.g. "1.0.0"
+
     # Derived fields (set after loading)
     config_path: Path = field(default=Path())
     package_root: Path = field(default=Path())
@@ -71,6 +75,14 @@ class Config:
         if not version_toml:
             raise ValueError("version_toml is required in [tool.auto_version]")
 
+        # Validate the pre-release channel, if configured.
+        prerelease_token = av_config.get("prerelease_token")
+        if prerelease_token is not None and prerelease_token not in {"a", "b", "rc"}:
+            raise ValueError(
+                "prerelease_token must be one of 'a', 'b', 'rc' "
+                f"(got {prerelease_token!r})"
+            )
+
         # Parse commit parser options
         parser_opts_data = av_config.get("commit_parser_options", {})
         parser_opts = CommitParserOptions(
@@ -93,6 +105,8 @@ class Config:
             build_command=av_config.get("build_command"),
             assets=av_config.get("assets", []),
             commit_parser_options=parser_opts,
+            prerelease_token=prerelease_token,
+            release_as=av_config.get("release_as"),
             config_path=config_path.resolve(),
             package_root=config_path.parent.resolve(),
         )

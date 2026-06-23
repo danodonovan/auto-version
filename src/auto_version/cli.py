@@ -302,23 +302,13 @@ def show_version(config_path: Path | None) -> None:
         config = Config.from_file(config_path)
         repo = PyGit2Repository(config.package_root)
 
-        # Find the latest tag matching the format
-        # Convert tag_format to glob pattern (e.g., "kg-{version}" -> "kg-*")
-        tag_pattern = config.tag_format.replace("{version}", "*")
-        tags = repo.get_tags(tag_pattern)
+        # Find the latest released version using PEP 440 ordering, so pre-releases
+        # (e.g. 1.0.0b1) rank correctly rather than tying with the final release.
+        orchestrator = ReleaseOrchestrator(repo, config)
+        version = orchestrator.get_latest_version()
 
-        if tags:
-            # Tags are already sorted newest first
-            latest_tag = tags[0]
-            # Extract version from tag using proper parsing
-            version = config.parse_tag_version(latest_tag)
-            if version:
-                click.echo(version)
-            else:
-                click.echo(
-                    f"Error: Failed to parse version from tag {latest_tag}", err=True
-                )
-                sys.exit(1)
+        if version is not None:
+            click.echo(str(version))
         else:
             # No tag found, get version from config files
             from auto_version.versioning.reader import read_version

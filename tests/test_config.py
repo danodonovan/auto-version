@@ -105,6 +105,60 @@ version_toml = ["pyproject.toml:project.version"]
         config_path.unlink()
 
 
+def _write_config(content: str) -> Path:
+    with NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+        f.write(content)
+        f.flush()
+        return Path(f.name)
+
+
+def test_config_prerelease_defaults_absent():
+    """Pre-release keys default to None when absent (today's behaviour)."""
+    config_path = _write_config("""
+[tool.auto_version]
+tag_format = "mypackage-{version}"
+version_toml = ["pyproject.toml:project.version"]
+""")
+    try:
+        config = Config.from_file(config_path)
+        assert config.prerelease_token is None
+        assert config.release_as is None
+    finally:
+        config_path.unlink()
+
+
+def test_config_prerelease_loaded():
+    """prerelease_token and release_as load from [tool.auto_version]."""
+    config_path = _write_config("""
+[tool.auto_version]
+tag_format = "dwpc-{version}"
+version_toml = ["pyproject.toml:project.version"]
+prerelease_token = "b"
+release_as = "1.0.0"
+""")
+    try:
+        config = Config.from_file(config_path)
+        assert config.prerelease_token == "b"
+        assert config.release_as == "1.0.0"
+    finally:
+        config_path.unlink()
+
+
+def test_config_invalid_prerelease_token():
+    """An out-of-range prerelease_token raises ValueError."""
+    config_path = _write_config("""
+[tool.auto_version]
+tag_format = "dwpc-{version}"
+version_toml = ["pyproject.toml:project.version"]
+prerelease_token = "beta"
+""")
+    try:
+        with pytest.raises(ValueError, match="prerelease_token"):
+            Config.from_file(config_path)
+    finally:
+        config_path.unlink()
+
+
 def test_config_missing_required_fields():
     """Test that missing required fields raise errors."""
     config_content = """
