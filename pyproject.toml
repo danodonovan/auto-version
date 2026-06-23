@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "click>=8.0.0",
+    "packaging>=21.0",
     "pygit2>=1.13.0",
     "tomli>=2.0.0; python_version < '3.11'",
     "tomli-w>=1.0.0",
