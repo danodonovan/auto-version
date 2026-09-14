@@ -172,11 +172,23 @@ This will:
 5. Create a commit: "release: mypackage 0.2.0"
 6. Create a tag: "mypackage-0.2.0"
 
-### 4. Push
+### 4. Publish
+
+`--push` **replaces** step 3 rather than following it: it creates the release
+*and* publishes it. Run it instead of a bare `auto-version release`:
 
 ```bash
-# Push the release commit and its tag in one atomic update
+# Create the release and publish it in one atomic update
 auto-version release --push
+```
+
+If you have already run step 3, the release exists locally and `--push` will
+report "no release needed" — the version comes from tags, and the local tag
+already claims it. Publish what you have with git directly; the exact command
+is printed by step 3:
+
+```bash
+git push --atomic origin HEAD:refs/heads/main refs/tags/mypackage-0.2.0
 ```
 
 `--push` publishes the commit and tag as a single all-or-nothing ref update, so
@@ -198,7 +210,24 @@ corrupts every later release. Recomputing always yields a commit and tag that
 agree with each other and with the branch they are landing on.
 
 Failures that retrying cannot fix (bad credentials, unknown remote) are not
-retried. If every attempt is rejected, nothing is pushed and the command exits 4.
+retried.
+
+### What `--push` leaves behind when it fails
+
+The two failure modes need opposite handling, so they behave differently:
+
+| Failure | Exit | Local state |
+| --- | --- | --- |
+| Rejected every attempt (the remote kept moving) | 4 | **Discarded.** The version it claimed may have been taken by the release that won, so it is recomputed on a re-run. |
+| Push failed for another reason (credentials, hook, unknown remote) | 4 | **Kept.** The release is correct and only publication failed, so it is left for you to push by hand — the command is in the error message. |
+
+The distinction matters because any local release tag makes the next run report
+"no release needed". A kept release is therefore always reported as kept.
+
+`--push` refuses to run on a dirty worktree (tracked modifications only —
+untracked files are safe), because retrying resets the checkout. It also
+refuses a detached HEAD unless you pass `--branch`, rather than guessing where
+the release should land.
 
 ## Changelog Format
 

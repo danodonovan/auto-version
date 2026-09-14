@@ -91,9 +91,13 @@ Tests use `MockGitRepository` (never real git). Fixtures are in `tests/conftest.
 
 `MockGitRepository` is both a builder and a spy: set up state with `add_commit()` / `add_tag()`, then assert on the git operations that ran via `get_operations()` (logs entries like `create_tag: …`, `create_commit: …`, `stage_files: …`, `push: …`, `fetch: …`, `reset_hard: …`, `delete_tag: …`). Use this to verify orchestration behavior without mutating a real repo.
 
-For publication (`release_and_publish`), the mock also simulates contention:
+For publication (`release_and_publish`), the mock also simulates contention and
+the states `--push` must refuse:
 - `queue_push_failures(count, non_fast_forward=True)` — make the next `count` pushes raise `PushRejected`
 - `add_tag_arriving_on_fetch(name, sha)` — reveal a tag on the next `fetch()`, modelling the winning job's release landing
+- `set_dirty(True)` — report tracked modifications
+- `set_current_branch(None)` — model a detached HEAD
+- `fail_tag_delete(name)` — make `delete_tag` raise, as a ref lock would
 
 Pass `sleep=lambda _: None` to `release_and_publish` in tests so the backoff does not slow the suite. See `tests/test_publish.py`.
 
