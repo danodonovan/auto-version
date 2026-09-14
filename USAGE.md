@@ -229,6 +229,12 @@ untracked files are safe), because retrying resets the checkout. It also
 refuses a detached HEAD unless you pass `--branch`, rather than guessing where
 the release should land.
 
+A retry only ever resets onto a tip that already contains the commit publishing
+started from, so it can never discard anything `--push` did not create. If your
+branch carries commits the remote does not have, the release is rolled back to
+where it started and you are asked to rebase — `--push` will not reset your
+commits away, and it will not rebase them for you either.
+
 ## Changelog Format
 
 Auto-version maintains a CHANGELOG.md in this format:

@@ -98,6 +98,9 @@ the states `--push` must refuse:
 - `set_dirty(True)` — report tracked modifications
 - `set_current_branch(None)` — model a detached HEAD
 - `fail_tag_delete(name)` — make `delete_tag` raise, as a ref lock would
+- `set_diverged_from_remote(True)` — model a branch carrying commits the remote lacks
+
+`add_release_arriving_on_fetch(commit, tag)` adds the winner's commit **and** tag. Registering a tag without its commit leaves `get_commits_since` unable to resolve it, so the mock reports all history as unreleased and a recomputed version passes for the wrong reason.
 
 Pass `sleep=lambda _: None` to `release_and_publish` in tests so the backoff does not slow the suite. See `tests/test_publish.py`.
 
