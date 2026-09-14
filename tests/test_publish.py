@@ -207,3 +207,107 @@ def test_backoff_is_bounded_and_jittered():
 
     assert all(0.0 <= d <= 8.0 for d in delays)
     assert ReleaseOrchestrator._backoff(10) <= 8.0
+
+
+# --- guards: refuse rather than do damage ---
+
+
+def test_refuses_a_dirty_worktree(repo, package):
+    """A retry resets the checkout, so local modifications must block first.
+
+    The check has to precede the first release() call, because release()
+    dirties the tree itself by writing version files and the changelog.
+    """
+    repo.set_dirty(True)
+
+    with pytest.raises(ValueError, match="local modifications"):
+        _publish(repo, package)
+
+    assert not [op for op in repo.get_operations() if op.startswith("push:")]
+    assert not [op for op in repo.get_operations() if op.startswith("create_commit:")]
+
+
+def test_refuses_a_detached_head_without_an_explicit_branch(repo, package):
+    """A detached HEAD has no branch; guessing one could publish anywhere.
+
+    Before, get_current_branch() returned the sentinel "HEAD", which flowed
+    into the refspec as HEAD:refs/heads/HEAD and would have created a remote
+    branch literally named "HEAD" — a normal state for a CI tag build.
+    """
+    repo.set_current_branch(None)
+
+    with pytest.raises(ValueError, match="detached"):
+        _publish(repo, package)
+
+    assert not [op for op in repo.get_operations() if op.startswith("push:")]
+
+
+def test_detached_head_is_fine_with_an_explicit_branch(repo, package):
+    """--branch says where the release lands, so detachment stops mattering."""
+    repo.set_current_branch(None)
+
+    result = _publish(repo, package, branch="main")
+
+    assert str(result.new_version) == "1.0.1"
+    assert (
+        "push: origin HEAD:refs/heads/main refs/tags/kg-1.0.1" in repo.get_operations()
+    )
+
+
+def test_rejects_negative_retries(repo, package):
+    """Negative retries emptied the loop and hit an internal assertion."""
+    with pytest.raises(ValueError, match="zero or greater"):
+        _publish(repo, package, retries=-1)
+
+
+# --- what is left on disk after a failure ---
+
+
+def test_discards_the_release_when_every_attempt_is_rejected(repo, package):
+    """Exhaustion must clean up, or the stray tag silences the next run.
+
+    Any local release tag makes release() report NONE, so leaving one behind
+    after a lost race would make the advertised "re-run" a silent no-op.
+    """
+    repo.queue_push_failures(5)
+
+    with pytest.raises(PushRejected):
+        _publish(repo, package, retries=1)
+
+    ops = repo.get_operations()
+    assert "delete_tag: kg-1.0.1" in ops
+    assert "reset_hard: origin/main" in ops
+    # the tag is gone, so a re-run recomputes rather than reporting NONE
+    assert "kg-1.0.1" not in repo.get_tags()
+
+
+def test_keeps_the_release_when_the_failure_is_not_contention(repo, package):
+    """A correct release whose push failed externally is left to push by hand.
+
+    Discarding it would throw away valid work for a cause that has nothing to
+    do with the release - bad credentials, a hook, an unknown remote.
+    """
+    repo.queue_push_failures(1, non_fast_forward=False)
+
+    with pytest.raises(PushRejected):
+        _publish(repo, package, retries=3)
+
+    ops = repo.get_operations()
+    assert "kg-1.0.1" in repo.get_tags()
+    assert not [op for op in ops if op.startswith("delete_tag:")]
+    assert not [op for op in ops if op.startswith("reset_hard:")]
+
+
+def test_does_not_reset_when_tag_deletion_fails(repo, package):
+    """A failed deletion must abort, not proceed to orphan the tag.
+
+    Deleting before the reset is the whole invariant; resetting anyway would
+    strand the tag on a discarded commit and publish a non-ancestor tag.
+    """
+    repo.queue_push_failures(1)
+    repo.fail_tag_delete("kg-1.0.1")
+
+    with pytest.raises(RuntimeError, match="cannot delete tag"):
+        _publish(repo, package)
+
+    assert not [op for op in repo.get_operations() if op.startswith("reset_hard:")]

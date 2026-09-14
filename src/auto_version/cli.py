@@ -55,6 +55,7 @@ def main() -> None:
 )
 @click.option(
     "--push-retries",
+    type=click.IntRange(min=0),
     default=3,
     show_default=True,
     help="Extra attempts after a rejected push (0 disables retrying)",
@@ -239,7 +240,7 @@ def release(
 
         if dry_run:
             click.echo("\n💡 Run without --dry-run to create the release")
-            click.echo("   Then push with: auto-version release --push")
+            click.echo("   ...or with --push to create and publish it")
         elif push:
             click.echo(f"\n✅ Pushed to {remote} ({result.tag})")
         else:
@@ -255,8 +256,19 @@ def release(
         click.echo(f"Error: {e}", err=True)
         if e.non_fast_forward:
             click.echo(
-                f"Every attempt was rejected: {remote} is moving faster than "
-                "the retries. Nothing was pushed; re-run to try again.",
+                f"\nEvery attempt was rejected: {remote} is moving faster "
+                "than the retries. Nothing was published, and the local "
+                "release was discarded — re-run to recompute it.",
+                err=True,
+            )
+        else:
+            click.echo(
+                "\nThe release was created locally but not published. It is "
+                "correct — only the push failed — so it has been left in "
+                "place. Fix the cause above, then re-run the exact git push "
+                "shown in the error to publish it.\n"
+                "Until then this package will report 'no release needed', "
+                "because the local tag already claims that version.",
                 err=True,
             )
         sys.exit(4)

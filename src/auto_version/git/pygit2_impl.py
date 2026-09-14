@@ -33,6 +33,16 @@ def _is_non_fast_forward(git_output: str) -> bool:
     return any(marker in lowered for marker in _NON_FAST_FORWARD_MARKERS)
 
 
+def _is_missing_tag(git_output: str) -> bool:
+    """Whether ``git tag -d`` failed only because the tag was already absent.
+
+    Deleting an absent tag is the one tolerable failure; every other cause
+    must propagate, since the caller deletes a tag to stop a following reset
+    from orphaning it.
+    """
+    return "not found" in git_output.lower()
+
+
 class PyGit2Repository(GitRepository):
     """Real git repository implementation using pygit2."""
 
@@ -205,8 +215,8 @@ class PyGit2Repository(GitRepository):
 
         return str(commit_oid)
 
-    def get_current_branch(self) -> str:
-        """Get the name of the current branch, or "HEAD" if detached.
+    def get_current_branch(self) -> str | None:
+        """Get the name of the current branch, or None if HEAD is detached.
 
         Uses ``head_is_detached`` rather than comparing ``head.type`` against
         ``pygit2.GIT_REF_SYMBOLIC``: that module-level constant was moved into
@@ -214,13 +224,16 @@ class PyGit2Repository(GitRepository):
         the old comparison was inverted besides — it returned the branch name
         only when HEAD was symbolic-*resolved*, so a normal checkout reported
         "HEAD". ``--push`` is the first caller, so this went unnoticed.
+
+        An unborn HEAD (a fresh repository with no commits) also has no
+        branch to push to, so it reports None as well.
         """
         try:
             if self._repo.head_is_detached:
-                return "HEAD"
+                return None
             return str(self._repo.head.shorthand)
         except pygit2.GitError:
-            return "HEAD"
+            return None
 
     def get_repo_root(self) -> Path:
         """Get the root directory of the git repository."""
@@ -282,9 +295,23 @@ class PyGit2Repository(GitRepository):
     def delete_tag(self, name: str) -> None:
         """Delete a tag from the local repository only.
 
-        Idempotent: a tag that is already gone is not an error.
+        An absent tag is tolerated; anything else raises. The caller deletes
+        the tag so that the reset which follows cannot leave it pointing at a
+        discarded commit, so swallowing a real failure (a lock, a corrupt
+        ref) would defeat exactly the invariant this call exists to keep.
         """
-        self._run_git("tag", "-d", name, check=False)
+        completed = self._run_git("tag", "-d", name, check=False)
+        if completed.returncode == 0 or _is_missing_tag(completed.stderr):
+            return
+        raise RuntimeError(
+            f"git tag -d {name} failed (exit {completed.returncode}): "
+            f"{completed.stderr.strip()}"
+        )
+
+    def is_dirty(self) -> bool:
+        """Whether tracked files have staged or unstaged modifications."""
+        completed = self._run_git("status", "--porcelain", "--untracked-files=no")
+        return bool(completed.stdout.strip())
 
     def _run_git(
         self, *args: str, check: bool = True

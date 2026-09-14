@@ -19,6 +19,9 @@ class MockGitRepository(GitRepository):
         self._local_commit_shas: list[str] = []  # created via create_commit
         self._queued_push_failures: list[bool] = []  # non_fast_forward flags
         self._tags_arriving_on_fetch: dict[str, str] = {}
+        self._current_branch: str | None = "main"
+        self._dirty = False
+        self._tag_delete_failures: set[str] = set()
 
     def add_commit(self, commit: CommitInfo) -> None:
         """Add a commit to the mock repository."""
@@ -132,9 +135,21 @@ class MockGitRepository(GitRepository):
         self._operations.append(f"create_commit: {message}")
         return sha
 
-    def get_current_branch(self) -> str:
-        """Get the name of the current branch."""
-        return "main"
+    def get_current_branch(self) -> str | None:
+        """Get the name of the current branch, or None if detached."""
+        return self._current_branch
+
+    def set_current_branch(self, branch: str | None) -> None:
+        """Set the reported branch; None models a detached HEAD."""
+        self._current_branch = branch
+
+    def set_dirty(self, dirty: bool) -> None:
+        """Set whether tracked files report modifications."""
+        self._dirty = dirty
+
+    def is_dirty(self) -> bool:
+        """Whether tracked files have staged or unstaged modifications."""
+        return self._dirty
 
     def get_repo_root(self) -> Path:
         """Get the root directory of the git repository."""
@@ -170,9 +185,20 @@ class MockGitRepository(GitRepository):
         self._staged_files.clear()
 
     def delete_tag(self, name: str) -> None:
-        """Delete a tag from the mock repository."""
+        """Delete a tag from the mock repository.
+
+        Raises if the tag was registered via ``fail_tag_delete`` — modelling a
+        real deletion failure (a lock, a corrupt ref), as distinct from an
+        absent tag, which is tolerated.
+        """
         self._operations.append(f"delete_tag: {name}")
+        if name in self._tag_delete_failures:
+            raise RuntimeError(f"mock: cannot delete tag {name}")
         self._tags.pop(name, None)
+
+    def fail_tag_delete(self, name: str) -> None:
+        """Make ``delete_tag`` raise for this tag name."""
+        self._tag_delete_failures.add(name)
 
     def _matches_pattern(self, file_path: Path, pattern: str) -> bool:
         """Check if a file path matches a pattern."""

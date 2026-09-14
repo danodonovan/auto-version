@@ -12,7 +12,7 @@ failed)", never the "non-fast-forward" / "fetch first" phrasing a plain push
 uses.
 """
 
-from auto_version.git.pygit2_impl import _is_non_fast_forward
+from auto_version.git.pygit2_impl import _is_missing_tag, _is_non_fast_forward
 
 # --- real captured output: the remote moved under us (retryable) ---
 
@@ -87,3 +87,21 @@ To github.com:healx/healnet.git
 
 def test_classification_is_case_insensitive():
     assert _is_non_fast_forward("REMOTE: ERROR: CANNOT LOCK REF 'X'") is True
+
+
+# --- real captured output: `git tag -d` on a tag that is not there ---
+
+
+def test_missing_tag_is_tolerated():
+    """Captured verbatim from `git tag -d nope-1.2.3` (exit 1)."""
+    assert _is_missing_tag("error: tag 'nope-1.2.3' not found.\n") is True
+
+
+def test_other_tag_deletion_failures_propagate():
+    """A lock or ref error must not be mistaken for an absent tag.
+
+    Tolerating it would let the caller proceed to reset the worktree, leaving
+    the tag pointing at the commit that reset just discarded.
+    """
+    output = "error: cannot lock ref 'refs/tags/kg-1.0.1': Unable to create lock file\n"
+    assert _is_missing_tag(output) is False

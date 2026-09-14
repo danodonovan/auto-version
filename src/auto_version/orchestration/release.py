@@ -160,6 +160,22 @@ class ReleaseOrchestrator:
         attempt produces a commit and tag that agree with each other and with
         the branch they are about to land on.
 
+        What is left on disk depends on why publication failed, because the
+        two cases need opposite handling:
+
+        * **Rejected as non-fast-forward, retries exhausted.** The local
+          release is not merely unpushed, it is *wrong* — the version it
+          claims may have been taken by the release that won, and the bump
+          may have changed. It is discarded, so a re-run recomputes cleanly.
+        * **Failed for any other reason** (bad credentials, a hook, no such
+          remote). The release is correct and based on the current remote tip;
+          only publication failed. It is left in place so it can be pushed by
+          hand once the cause is fixed.
+
+        The distinction matters because *any* local release tag makes the next
+        run report "no release needed" — the version is derived from tags — so
+        leaving one behind is only safe when the caller is told it is there.
+
         Args:
             remote: Remote to push to
             branch: Branch to push to (default: the current branch)
@@ -171,13 +187,35 @@ class ReleaseOrchestrator:
             if there was nothing to release.
 
         Raises:
+            ValueError: ``retries`` is negative, HEAD is detached and no
+                ``branch`` was given, or the worktree has local modifications.
             PushRejected: The push failed for a reason retrying cannot fix, or
                 every attempt was rejected.
         """
+        if retries < 0:
+            raise ValueError(f"retries must be zero or greater, got {retries}")
+
         if branch is None:
             branch = self.repo.get_current_branch()
+            if branch is None:
+                raise ValueError(
+                    "HEAD is detached, so there is no branch to publish to. "
+                    "Pass an explicit branch (--branch) to say where this "
+                    "release should land."
+                )
 
-        for attempt in range(retries + 1):
+        # A retry resets the worktree, which would discard local modifications
+        # along with the release being retried. Checked before the first
+        # release() call, since release() dirties the tree itself.
+        if self.repo.is_dirty():
+            raise ValueError(
+                "the worktree has local modifications, which publishing may "
+                "discard when retrying a rejected push. Commit or stash them "
+                "first."
+            )
+
+        attempt = 0
+        while True:
             result = self.release(dry_run=False)
 
             if result.bump_type == VersionBump.NONE:
@@ -189,20 +227,24 @@ class ReleaseOrchestrator:
                     [f"HEAD:refs/heads/{branch}", f"refs/tags/{result.tag}"],
                 )
             except PushRejected as exc:
-                if not exc.non_fast_forward or attempt == retries:
+                if not exc.non_fast_forward:
+                    # Correct release, external failure: leave it to be pushed
+                    # by hand. The caller reports the tag and the command.
                     raise
                 # Drop the tag before resetting so it cannot survive pointing
-                # at a commit that is about to stop existing.
+                # at a commit that is about to stop existing. If the deletion
+                # genuinely fails this raises, and the reset below is skipped
+                # rather than orphaning the tag.
                 self.repo.delete_tag(result.tag)
                 self.repo.fetch(remote, branch)
                 self.repo.reset_hard(f"{remote}/{branch}")
-                sleep(self._backoff(attempt))
+                if attempt >= retries:
+                    raise
+                attempt += 1
+                sleep(self._backoff(attempt - 1))
                 continue
 
             return result
-
-        # Unreachable: the loop either returns or raises.
-        raise AssertionError("release_and_publish exhausted without a result")
 
     @staticmethod
     def _backoff(attempt: int) -> float:

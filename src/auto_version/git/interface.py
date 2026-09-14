@@ -88,8 +88,14 @@ class GitRepository(ABC):
         pass
 
     @abstractmethod
-    def get_current_branch(self) -> str:
-        """Get the name of the current branch."""
+    def get_current_branch(self) -> str | None:
+        """Get the name of the current branch, or None if HEAD is detached.
+
+        Returns None rather than a sentinel string: a detached HEAD has no
+        branch, and a placeholder that looks like a branch name will be used
+        like one — ``HEAD:refs/heads/HEAD`` pushes a remote branch literally
+        called "HEAD". Callers must handle None explicitly.
+        """
         pass
 
     @abstractmethod
@@ -144,7 +150,21 @@ class GitRepository(ABC):
     def delete_tag(self, name: str) -> None:
         """Delete a tag from the local repository only.
 
+        A tag that is already absent is not an error. Any other failure must
+        raise: callers delete a tag precisely so a following reset cannot
+        orphan it, so a swallowed failure defeats the point.
+
         Args:
             name: Tag name to delete
+        """
+        pass
+
+    @abstractmethod
+    def is_dirty(self) -> bool:
+        """Whether tracked files have staged or unstaged modifications.
+
+        Untracked files do not count: ``git reset --hard`` leaves them alone,
+        so treating them as dirty would reject a checkout that is in fact
+        safe to reset.
         """
         pass
