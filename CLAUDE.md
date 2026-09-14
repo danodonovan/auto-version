@@ -28,6 +28,7 @@ make fix
 
 # CLI usage
 auto-version release [CONFIG_PATH] [--dry-run] [--verbose]
+auto-version release --push [--remote origin] [--branch main] [--push-retries 3]
 auto-version status [CONFIG_PATH]
 auto-version show-version [CONFIG_PATH]
 ```
@@ -49,7 +50,8 @@ CLI (cli.py)
 - `GitRepository` is an abstract interface — `PyGit2Repository` handles real git ops; `MockGitRepository` (in-memory) is used in all tests. Never instantiate a real git repo in tests.
 - Data models (`models.py`) are frozen dataclasses — `Version`, `CommitInfo`, `ReleaseResult`.
 - Analysis modules (`commit_parser`, `version_calculator`) are pure functions with no side effects.
-- CLI exit codes: 0 = success, 1 = error, 2 = no changes needed, 3 = validation error.
+- CLI exit codes: 0 = success, 1 = error, 2 = no changes needed, 3 = validation error,
+  4 = push rejected (see `--push` below).
 
 ## Configuration
 
@@ -87,6 +89,12 @@ Tests use `MockGitRepository` (never real git). Fixtures are in `tests/conftest.
 - `mock_repo` — a fresh `MockGitRepository` instance
 - `simple_commit` — a standard `CommitInfo` fixture
 
-`MockGitRepository` is both a builder and a spy: set up state with `add_commit()` / `add_tag()`, then assert on the git operations that ran via `get_operations()` (logs entries like `create_tag: …`, `create_commit: …`, `stage_files: …`). Use this to verify orchestration behavior without mutating a real repo.
+`MockGitRepository` is both a builder and a spy: set up state with `add_commit()` / `add_tag()`, then assert on the git operations that ran via `get_operations()` (logs entries like `create_tag: …`, `create_commit: …`, `stage_files: …`, `push: …`, `fetch: …`, `reset_hard: …`, `delete_tag: …`). Use this to verify orchestration behavior without mutating a real repo.
+
+For publication (`release_and_publish`), the mock also simulates contention:
+- `queue_push_failures(count, non_fast_forward=True)` — make the next `count` pushes raise `PushRejected`
+- `add_tag_arriving_on_fetch(name, sha)` — reveal a tag on the next `fetch()`, modelling the winning job's release landing
+
+Pass `sleep=lambda _: None` to `release_and_publish` in tests so the backoff does not slow the suite. See `tests/test_publish.py`.
 
 The `example/` directory contains a working package config that doubles as a manual integration test target.

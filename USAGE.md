@@ -154,7 +154,7 @@ Output:
   Tag: mypackage-0.2.0
 
 💡 Run without --dry-run to create the release
-   Then push with: git push && git push --tags
+   Then push with: auto-version release --push
 ```
 
 ### 3. Create Release
@@ -175,9 +175,30 @@ This will:
 ### 4. Push
 
 ```bash
-# Push commit and tags
-git push && git push --tags
+# Push the release commit and its tag in one atomic update
+auto-version release --push
 ```
+
+`--push` publishes the commit and tag as a single all-or-nothing ref update, so
+the tag can never land without the commit that bumped the version.
+
+If the remote branch moved while the release was being prepared — a concurrent
+release job in a monorepo, or an unrelated merge — the push is rejected. Rather
+than fail, `--push` **discards the local release and recomputes it** against the
+new tip, then pushes again (3 extra attempts by default, jittered):
+
+```bash
+auto-version release --push --remote origin --branch main --push-retries 3
+```
+
+Recomputing rather than rebasing is deliberate. A rebase would rewrite the
+release commit and strand the tag on the orphan, publishing a tag that is not an
+ancestor of the branch — and since the version is derived from tags, that
+corrupts every later release. Recomputing always yields a commit and tag that
+agree with each other and with the branch they are landing on.
+
+Failures that retrying cannot fix (bad credentials, unknown remote) are not
+retried. If every attempt is rejected, nothing is pushed and the command exits 4.
 
 ## Changelog Format
 
@@ -254,6 +275,8 @@ path_filters = [
 - `1`: Error (configuration, git, etc.)
 - `2`: No changes to release
 - `3`: Validation error
+- `4`: Push rejected — every attempt lost the race, or the push failed for a
+  reason retrying cannot fix (bad credentials, unknown remote). Nothing was pushed.
 
 ## Testing
 
