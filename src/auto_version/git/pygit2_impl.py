@@ -1,12 +1,36 @@
 """Real git repository implementation using pygit2."""
 
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pygit2
 
-from auto_version.git.interface import GitRepository
+from auto_version.git.interface import GitRepository, PushRejected
 from auto_version.models import CommitInfo
+
+# Markers git uses when the remote ref moved under us — the one rejection a
+# retry can clear. Anything else (auth, unknown remote, DNS, a pre-receive
+# hook, branch protection) is not worth retrying.
+#
+# Two wordings matter, because they differ between push modes:
+#   plain  -> "! [rejected]  HEAD -> main (fetch first)"
+#   atomic -> "cannot lock ref 'refs/heads/main': is at <a> but expected <b>"
+#             "! [remote rejected] HEAD -> main (atomic transaction failed)"
+# A bare "! [rejected]" is deliberately NOT matched: it also covers hook and
+# branch-protection refusals, which retrying would only repeat.
+_NON_FAST_FORWARD_MARKERS = (
+    "non-fast-forward",
+    "fetch first",
+    "stale info",
+    "cannot lock ref",
+)
+
+
+def _is_non_fast_forward(git_output: str) -> bool:
+    """Whether git's push output indicates the remote ref moved under us."""
+    lowered = git_output.lower()
+    return any(marker in lowered for marker in _NON_FAST_FORWARD_MARKERS)
 
 
 class PyGit2Repository(GitRepository):
@@ -189,7 +213,7 @@ class PyGit2Repository(GitRepository):
         ``pygit2.enums`` and raises ``AttributeError`` on current pygit2, and
         the old comparison was inverted besides — it returned the branch name
         only when HEAD was symbolic-*resolved*, so a normal checkout reported
-        "HEAD". Nothing called this, so it went unnoticed.
+        "HEAD". ``--push`` is the first caller, so this went unnoticed.
         """
         try:
             if self._repo.head_is_detached:
@@ -213,6 +237,66 @@ class PyGit2Repository(GitRepository):
                 rel_path = file_path
             self._repo.index.add(str(rel_path))
         self._repo.index.write()
+
+    def fetch(self, remote: str, branch: str) -> None:
+        """Fetch a branch from a remote, updating its remote-tracking ref."""
+        self._run_git("fetch", remote, branch)
+
+    def push(self, remote: str, refspecs: list[str]) -> None:
+        """Push refspecs to a remote as a single all-or-nothing update.
+
+        The remote operations here shell out to ``git`` rather than using
+        pygit2, for three reasons. libgit2 exposes no atomic multi-ref push,
+        and atomicity is the point: pushing the release commit and its tag in
+        one ref transaction removes the window where the commit lands and the
+        tag does not, which otherwise leaves the version files and the tag
+        history disagreeing with nothing to repair it. ``git`` also inherits
+        the ambient credential setup (CI checkout, ssh agent, credential
+        helper) instead of needing pygit2 callbacks. And it keeps the four
+        remote/reset operations on one mechanism.
+        """
+        completed = self._run_git("push", "--atomic", remote, *refspecs, check=False)
+        if completed.returncode != 0:
+            raise PushRejected(
+                f"git push --atomic {remote} {' '.join(refspecs)} failed "
+                f"(exit {completed.returncode}):\n{completed.stderr.strip()}",
+                non_fast_forward=_is_non_fast_forward(
+                    f"{completed.stdout}\n{completed.stderr}"
+                ),
+            )
+
+    def reset_hard(self, ref: str) -> None:
+        """Discard local commits and working-tree changes, moving to ``ref``.
+
+        The index must be re-read afterwards. pygit2 caches it in memory, and
+        the reset above rewrote it on disk, so ``create_commit`` — which
+        commits ``index.write_tree()``, i.e. the *whole* index rather than
+        just the files it was handed — would otherwise write the pre-reset
+        snapshot. On a retry that silently reverts whatever the reset brought
+        in: the next release commit would undo the version bump and changelog
+        entry of the release that just won the race.
+        """
+        self._run_git("reset", "--hard", ref)
+        self._repo.index.read(True)
+
+    def delete_tag(self, name: str) -> None:
+        """Delete a tag from the local repository only.
+
+        Idempotent: a tag that is already gone is not an error.
+        """
+        self._run_git("tag", "-d", name, check=False)
+
+    def _run_git(
+        self, *args: str, check: bool = True
+    ) -> "subprocess.CompletedProcess[str]":
+        """Run a git command in the repository working directory."""
+        return subprocess.run(
+            ["git", *args],
+            cwd=str(self.get_repo_root()),
+            capture_output=True,
+            text=True,
+            check=check,
+        )
 
     def _matches_pattern(self, tag_name: str, pattern: str) -> bool:
         """Check if a tag matches a glob pattern."""

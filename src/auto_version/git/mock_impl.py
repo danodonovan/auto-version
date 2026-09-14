@@ -3,7 +3,7 @@
 from datetime import datetime
 from pathlib import Path
 
-from auto_version.git.interface import GitRepository
+from auto_version.git.interface import GitRepository, PushRejected
 from auto_version.models import CommitInfo
 
 
@@ -16,6 +16,9 @@ class MockGitRepository(GitRepository):
         self._commits: list[CommitInfo] = []
         self._staged_files: list[Path] = []
         self._operations: list[str] = []  # Log of operations for assertions
+        self._local_commit_shas: list[str] = []  # created via create_commit
+        self._queued_push_failures: list[bool] = []  # non_fast_forward flags
+        self._tags_arriving_on_fetch: dict[str, str] = {}
 
     def add_commit(self, commit: CommitInfo) -> None:
         """Add a commit to the mock repository."""
@@ -28,6 +31,23 @@ class MockGitRepository(GitRepository):
     def get_operations(self) -> list[str]:
         """Get log of operations performed."""
         return self._operations.copy()
+
+    def queue_push_failures(self, count: int, non_fast_forward: bool = True) -> None:
+        """Make the next ``count`` pushes raise :class:`PushRejected`.
+
+        Models losing a race to another release job (``non_fast_forward``
+        True) or a failure retrying cannot fix, such as bad credentials
+        (False).
+        """
+        self._queued_push_failures.extend([non_fast_forward] * count)
+
+    def add_tag_arriving_on_fetch(self, name: str, commit_sha: str) -> None:
+        """Register a tag that appears on the next ``fetch`` call.
+
+        Models the winning job's release tag becoming visible once we
+        re-sync, so a recomputed version is derived from the new tip.
+        """
+        self._tags_arriving_on_fetch[name] = commit_sha
 
     def get_tags(self, pattern: str | None = None) -> list[str]:
         """Get all tags, optionally filtered by pattern."""
@@ -108,6 +128,7 @@ class MockGitRepository(GitRepository):
             affected_files=files.copy(),
         )
         self._commits.append(commit)
+        self._local_commit_shas.append(sha)
         self._operations.append(f"create_commit: {message}")
         return sha
 
@@ -123,6 +144,35 @@ class MockGitRepository(GitRepository):
         """Stage files for commit."""
         self._staged_files.extend(files)
         self._operations.append(f"stage_files: {[str(f) for f in files]}")
+
+    def fetch(self, remote: str, branch: str) -> None:
+        """Fetch a branch, revealing any tags registered to arrive."""
+        self._operations.append(f"fetch: {remote} {branch}")
+        self._tags.update(self._tags_arriving_on_fetch)
+        self._tags_arriving_on_fetch.clear()
+
+    def push(self, remote: str, refspecs: list[str]) -> None:
+        """Push refspecs, honouring any queued failures."""
+        self._operations.append(f"push: {remote} {' '.join(refspecs)}")
+        if self._queued_push_failures:
+            non_fast_forward = self._queued_push_failures.pop(0)
+            raise PushRejected(
+                f"mock push rejected (non_fast_forward={non_fast_forward})",
+                non_fast_forward=non_fast_forward,
+            )
+
+    def reset_hard(self, ref: str) -> None:
+        """Discard locally created commits, as a hard reset would."""
+        self._operations.append(f"reset_hard: {ref}")
+        local = set(self._local_commit_shas)
+        self._commits = [c for c in self._commits if c.sha not in local]
+        self._local_commit_shas.clear()
+        self._staged_files.clear()
+
+    def delete_tag(self, name: str) -> None:
+        """Delete a tag from the mock repository."""
+        self._operations.append(f"delete_tag: {name}")
+        self._tags.pop(name, None)
 
     def _matches_pattern(self, file_path: Path, pattern: str) -> bool:
         """Check if a file path matches a pattern."""

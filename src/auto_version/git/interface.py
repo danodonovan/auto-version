@@ -7,6 +7,20 @@ from pathlib import Path
 from auto_version.models import CommitInfo
 
 
+class PushRejected(Exception):
+    """A push to the remote was rejected.
+
+    ``non_fast_forward`` distinguishes the one failure worth retrying — the
+    remote branch moved under us, so re-deriving the release against the new
+    tip will succeed — from failures that retrying can only repeat (bad
+    credentials, no such remote, network down).
+    """
+
+    def __init__(self, message: str, *, non_fast_forward: bool) -> None:
+        super().__init__(message)
+        self.non_fast_forward = non_fast_forward
+
+
 class GitRepository(ABC):
     """Abstract interface for git repository operations."""
 
@@ -89,5 +103,48 @@ class GitRepository(ABC):
 
         Args:
             files: List of file paths to stage
+        """
+        pass
+
+    @abstractmethod
+    def fetch(self, remote: str, branch: str) -> None:
+        """Fetch a branch from a remote, updating its remote-tracking ref.
+
+        Args:
+            remote: Remote name (e.g. "origin")
+            branch: Branch to fetch (e.g. "main")
+        """
+        pass
+
+    @abstractmethod
+    def push(self, remote: str, refspecs: list[str]) -> None:
+        """Push refspecs to a remote as a single all-or-nothing update.
+
+        Args:
+            remote: Remote name (e.g. "origin")
+            refspecs: Refspecs to push, e.g.
+                ``["HEAD:refs/heads/main", "refs/tags/pkg-1.2.3"]``
+
+        Raises:
+            PushRejected: The remote refused the update. Check
+                ``non_fast_forward`` to decide whether a retry can help.
+        """
+        pass
+
+    @abstractmethod
+    def reset_hard(self, ref: str) -> None:
+        """Discard local commits and working-tree changes, moving to ``ref``.
+
+        Args:
+            ref: Reference to reset onto (e.g. "origin/main")
+        """
+        pass
+
+    @abstractmethod
+    def delete_tag(self, name: str) -> None:
+        """Delete a tag from the local repository only.
+
+        Args:
+            name: Tag name to delete
         """
         pass
