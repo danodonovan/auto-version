@@ -1,12 +1,15 @@
 """Main release orchestration logic."""
 
+import random
+import time
 from pathlib import Path
+from typing import Callable
 
 from auto_version.analysis.commit_parser import parse_conventional_commit
 from auto_version.analysis.version_calculator import calculate_version_bump
 from auto_version.changelog.generator import update_changelog
 from auto_version.config import Config
-from auto_version.git.interface import GitRepository
+from auto_version.git.interface import GitRepository, PushRejected
 from auto_version.models import ReleaseResult, Version, VersionBump
 from auto_version.versioning.updater import update_version_files
 
@@ -134,6 +137,77 @@ class ReleaseOrchestrator:
             commits_included=commits,
             dry_run=False,
         )
+
+    def release_and_publish(
+        self,
+        remote: str = "origin",
+        branch: str | None = None,
+        retries: int = 3,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> ReleaseResult:
+        """Execute a release and publish it, re-deriving it if the push races.
+
+        The release commit and its tag are pushed in one atomic ref update. If
+        the remote branch moved under us — another package's release job
+        winning the race, or an unrelated merge landing — the local release is
+        **discarded and recomputed** against the new tip rather than replayed.
+
+        Replaying is what a rebase would do, and it is wrong here: the tag
+        ``release()`` created points at the pre-rebase commit, so rebasing
+        strands the tag on an orphan and publishes a tag that is not an
+        ancestor of the branch. Since the version is derived from tags, that
+        corrupts the input to every later release. Recomputing cannot: each
+        attempt produces a commit and tag that agree with each other and with
+        the branch they are about to land on.
+
+        Args:
+            remote: Remote to push to
+            branch: Branch to push to (default: the current branch)
+            retries: Extra attempts after a rejected push (0 disables retrying)
+            sleep: Injected for tests; defaults to :func:`time.sleep`
+
+        Returns:
+            Result of the release that was published, or a ``NONE`` bump result
+            if there was nothing to release.
+
+        Raises:
+            PushRejected: The push failed for a reason retrying cannot fix, or
+                every attempt was rejected.
+        """
+        if branch is None:
+            branch = self.repo.get_current_branch()
+
+        for attempt in range(retries + 1):
+            result = self.release(dry_run=False)
+
+            if result.bump_type == VersionBump.NONE:
+                return result
+
+            try:
+                self.repo.push(
+                    remote,
+                    [f"HEAD:refs/heads/{branch}", f"refs/tags/{result.tag}"],
+                )
+            except PushRejected as exc:
+                if not exc.non_fast_forward or attempt == retries:
+                    raise
+                # Drop the tag before resetting so it cannot survive pointing
+                # at a commit that is about to stop existing.
+                self.repo.delete_tag(result.tag)
+                self.repo.fetch(remote, branch)
+                self.repo.reset_hard(f"{remote}/{branch}")
+                sleep(self._backoff(attempt))
+                continue
+
+            return result
+
+        # Unreachable: the loop either returns or raises.
+        raise AssertionError("release_and_publish exhausted without a result")
+
+    @staticmethod
+    def _backoff(attempt: int) -> float:
+        """Jittered backoff so racing jobs do not retry in lockstep."""
+        return random.uniform(0.0, min(2.0**attempt, 8.0))
 
     def get_latest_version(self) -> Version | None:
         """Return the latest released version (PEP 440 ordered), or None if untagged.

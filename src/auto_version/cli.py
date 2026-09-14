@@ -6,6 +6,7 @@ from pathlib import Path
 import click
 
 from auto_version.config import Config
+from auto_version.git.interface import PushRejected
 from auto_version.git.pygit2_impl import PyGit2Repository
 from auto_version.models import VersionBump
 from auto_version.orchestration.release import ReleaseOrchestrator
@@ -35,10 +36,37 @@ def main() -> None:
     is_flag=True,
     help="Show detailed output",
 )
+@click.option(
+    "--push/--no-push",
+    default=False,
+    help="Push the release commit and tag atomically, retrying if the "
+    "remote branch moved (recomputing the version each time)",
+)
+@click.option(
+    "--remote",
+    default="origin",
+    show_default=True,
+    help="Remote to push to (with --push)",
+)
+@click.option(
+    "--branch",
+    default=None,
+    help="Branch to push to (with --push; default: the current branch)",
+)
+@click.option(
+    "--push-retries",
+    default=3,
+    show_default=True,
+    help="Extra attempts after a rejected push (0 disables retrying)",
+)
 def release(
     config_path: Path | None,
     dry_run: bool,
     verbose: bool,
+    push: bool,
+    remote: str,
+    branch: str | None,
+    push_retries: int,
 ) -> None:
     """Create a new release for a package.
 
@@ -57,7 +85,19 @@ def release(
         \b
         # Dry run to see what would happen
         auto-version release --dry-run
+
+        \b
+        # Release and publish it, tolerating concurrent release jobs
+        auto-version release --push
     """
+    if push and dry_run:
+        click.echo(
+            "Error: --push cannot be combined with --dry-run "
+            "(a dry run creates nothing to push).",
+            err=True,
+        )
+        sys.exit(3)
+
     try:
         # Find config file
         if config_path is None:
@@ -91,7 +131,12 @@ def release(
         if verbose:
             click.echo("Analyzing commits and calculating version bump...")
 
-        result = orchestrator.release(dry_run=dry_run)
+        if push:
+            result = orchestrator.release_and_publish(
+                remote=remote, branch=branch, retries=push_retries
+            )
+        else:
+            result = orchestrator.release(dry_run=dry_run)
 
         # Display results
         if result.bump_type == VersionBump.NONE:
@@ -194,11 +239,27 @@ def release(
 
         if dry_run:
             click.echo("\n💡 Run without --dry-run to create the release")
-            click.echo("   Then push with: git push && git push --tags")
+            click.echo("   Then push with: auto-version release --push")
+        elif push:
+            click.echo(f"\n✅ Pushed to {remote} ({result.tag})")
         else:
             click.echo("\n💡 Push the release:")
-            click.echo(f"   git push && git push origin {result.tag}")
+            click.echo(
+                f"   git push --atomic {remote} "
+                f"HEAD:refs/heads/$(git branch --show-current) "
+                f"refs/tags/{result.tag}"
+            )
+            click.echo("   (or re-run with --push to do it for you)")
 
+    except PushRejected as e:
+        click.echo(f"Error: {e}", err=True)
+        if e.non_fast_forward:
+            click.echo(
+                f"Every attempt was rejected: {remote} is moving faster than "
+                "the retries. Nothing was pushed; re-run to try again.",
+                err=True,
+            )
+        sys.exit(4)
     except FileNotFoundError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
