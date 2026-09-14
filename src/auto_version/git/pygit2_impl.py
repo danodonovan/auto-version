@@ -182,12 +182,19 @@ class PyGit2Repository(GitRepository):
         return str(commit_oid)
 
     def get_current_branch(self) -> str:
-        """Get the name of the current branch."""
+        """Get the name of the current branch, or "HEAD" if detached.
+
+        Uses ``head_is_detached`` rather than comparing ``head.type`` against
+        ``pygit2.GIT_REF_SYMBOLIC``: that module-level constant was moved into
+        ``pygit2.enums`` and raises ``AttributeError`` on current pygit2, and
+        the old comparison was inverted besides — it returned the branch name
+        only when HEAD was symbolic-*resolved*, so a normal checkout reported
+        "HEAD". Nothing called this, so it went unnoticed.
+        """
         try:
-            head = self._repo.head
-            if head.type == pygit2.GIT_REF_SYMBOLIC:
-                return head.shorthand
-            return "HEAD"  # Detached HEAD
+            if self._repo.head_is_detached:
+                return "HEAD"
+            return str(self._repo.head.shorthand)
         except pygit2.GitError:
             return "HEAD"
 
