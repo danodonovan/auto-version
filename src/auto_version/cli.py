@@ -6,7 +6,7 @@ from pathlib import Path
 import click
 
 from auto_version.config import Config
-from auto_version.git.interface import PushRejected
+from auto_version.git.interface import BranchDiverged, PushRejected
 from auto_version.git.pygit2_impl import PyGit2Repository
 from auto_version.models import VersionBump
 from auto_version.orchestration.release import ReleaseOrchestrator
@@ -244,14 +244,32 @@ def release(
         elif push:
             click.echo(f"\n✅ Pushed to {remote} ({result.tag})")
         else:
+            # Name the branch rather than shelling out to
+            # `git branch --show-current`, which is empty on a detached HEAD
+            # and would print an invalid refspec (HEAD:refs/heads/).
+            target = repo.get_current_branch()
             click.echo("\n💡 Push the release:")
-            click.echo(
-                f"   git push --atomic {remote} "
-                f"HEAD:refs/heads/$(git branch --show-current) "
-                f"refs/tags/{result.tag}"
-            )
+            if target is None:
+                click.echo(
+                    f"   git push --atomic {remote} "
+                    f"HEAD:refs/heads/<branch> refs/tags/{result.tag}"
+                )
+                click.echo(
+                    "   HEAD is detached, so substitute the branch this "
+                    "release belongs on."
+                )
+            else:
+                click.echo(
+                    f"   git push --atomic {remote} "
+                    f"HEAD:refs/heads/{target} refs/tags/{result.tag}"
+                )
             click.echo("   (or re-run with --push to do it for you)")
 
+    except BranchDiverged as e:
+        # Message is complete on its own: re-running will not help until
+        # the branch is rebased, so the generic advice below must not run.
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(4)
     except PushRejected as e:
         click.echo(f"Error: {e}", err=True)
         if e.non_fast_forward:

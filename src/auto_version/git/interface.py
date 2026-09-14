@@ -21,6 +21,15 @@ class PushRejected(Exception):
         self.non_fast_forward = non_fast_forward
 
 
+class BranchDiverged(PushRejected):
+    """The remote moved, and the branch carries commits it does not contain.
+
+    Distinct from a plain rejection because the advice differs: a plain
+    rejection is worth re-running, whereas this one will recur until the
+    branch is rebased, so its message is self-contained.
+    """
+
+
 class GitRepository(ABC):
     """Abstract interface for git repository operations."""
 
@@ -113,12 +122,20 @@ class GitRepository(ABC):
         pass
 
     @abstractmethod
-    def fetch(self, remote: str, branch: str) -> None:
-        """Fetch a branch from a remote, updating its remote-tracking ref.
+    def fetch(self, remote: str, branch: str) -> str:
+        """Fetch a branch from a remote and return a ref naming its tip.
+
+        Callers must reset to the returned ref rather than composing
+        ``<remote>/<branch>`` themselves: the remote-tracking ref is only
+        updated opportunistically and can be left stale, or not exist at all
+        when the remote is given as a URL.
 
         Args:
-            remote: Remote name (e.g. "origin")
+            remote: Remote name or URL
             branch: Branch to fetch (e.g. "main")
+
+        Returns:
+            A ref that resolves to the fetched tip.
         """
         pass
 
@@ -156,6 +173,32 @@ class GitRepository(ABC):
 
         Args:
             name: Tag name to delete
+        """
+        pass
+
+    @abstractmethod
+    def resolve(self, ref: str) -> str:
+        """Resolve a ref to its commit SHA.
+
+        Args:
+            ref: Any revision git understands ("HEAD", "FETCH_HEAD", a SHA)
+
+        Returns:
+            The full commit SHA.
+        """
+        pass
+
+    @abstractmethod
+    def is_ancestor(self, ancestor: str, descendant: str) -> bool:
+        """Whether ``ancestor`` is reachable from ``descendant``.
+
+        Used to decide whether resetting onto a fetched tip would discard
+        local work: if the pre-release commit is reachable from that tip, the
+        reset can only drop what this tool created.
+
+        Args:
+            ancestor: Commit expected to be contained in ``descendant``
+            descendant: Commit to search from
         """
         pass
 

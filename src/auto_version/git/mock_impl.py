@@ -19,6 +19,9 @@ class MockGitRepository(GitRepository):
         self._local_commit_shas: list[str] = []  # created via create_commit
         self._queued_push_failures: list[bool] = []  # non_fast_forward flags
         self._tags_arriving_on_fetch: dict[str, str] = {}
+        self._commits_arriving_on_fetch: list[CommitInfo] = []
+        self._fetched_tip: str | None = None
+        self._diverged_from_remote = False
         self._current_branch: str | None = "main"
         self._dirty = False
         self._tag_delete_failures: set[str] = set()
@@ -44,13 +47,21 @@ class MockGitRepository(GitRepository):
         """
         self._queued_push_failures.extend([non_fast_forward] * count)
 
-    def add_tag_arriving_on_fetch(self, name: str, commit_sha: str) -> None:
-        """Register a tag that appears on the next ``fetch`` call.
+    def add_release_arriving_on_fetch(
+        self, commit: CommitInfo, tag: str | None = None
+    ) -> None:
+        """Register a commit, and optionally a tag on it, that arrive on fetch.
 
-        Models the winning job's release tag becoming visible once we
-        re-sync, so a recomputed version is derived from the new tip.
+        Models the winning job's release landing: its commit joins the branch
+        history and its tag points at that commit. Both halves matter. A tag
+        registered without its commit cannot be resolved by
+        ``get_commits_since``, which then treats the whole history as
+        unreleased — so a test would see a version recomputed from nothing and
+        pass for the wrong reason.
         """
-        self._tags_arriving_on_fetch[name] = commit_sha
+        self._commits_arriving_on_fetch.append(commit)
+        if tag is not None:
+            self._tags_arriving_on_fetch[tag] = commit.sha
 
     def get_tags(self, pattern: str | None = None) -> list[str]:
         """Get all tags, optionally filtered by pattern."""
@@ -147,6 +158,33 @@ class MockGitRepository(GitRepository):
         """Set whether tracked files report modifications."""
         self._dirty = dirty
 
+    def set_diverged_from_remote(self, diverged: bool) -> None:
+        """Model a local branch carrying commits the remote does not have.
+
+        Drives ``is_ancestor``: when True, the pre-release commit is reported
+        as unreachable from the fetched tip, which is what tells the publisher
+        that resetting onto that tip would discard the user's own commits.
+        """
+        self._diverged_from_remote = diverged
+
+    def resolve(self, ref: str) -> str:
+        """Resolve "HEAD", "FETCH_HEAD" or a literal SHA."""
+        if ref == "HEAD":
+            return self._commits[-1].sha if self._commits else "empty"
+        if ref == "FETCH_HEAD":
+            return self._fetched_tip or "no-fetch"
+        return ref
+
+    def is_ancestor(self, ancestor: str, descendant: str) -> bool:
+        """Whether ``ancestor`` is reachable from ``descendant``.
+
+        Modelled as a predicate rather than by walking the commit list: a
+        flat list cannot express divergence, and divergence is the only thing
+        this is asked about. ``set_diverged_from_remote`` selects the answer.
+        """
+        self._operations.append(f"is_ancestor: {ancestor} in {descendant}")
+        return not self._diverged_from_remote
+
     def is_dirty(self) -> bool:
         """Whether tracked files have staged or unstaged modifications."""
         return self._dirty
@@ -160,11 +198,21 @@ class MockGitRepository(GitRepository):
         self._staged_files.extend(files)
         self._operations.append(f"stage_files: {[str(f) for f in files]}")
 
-    def fetch(self, remote: str, branch: str) -> None:
-        """Fetch a branch, revealing any tags registered to arrive."""
+    def fetch(self, remote: str, branch: str) -> str:
+        """Fetch a branch, revealing any release registered to arrive.
+
+        Returns the ref naming the fetched tip, mirroring the real
+        implementation's use of FETCH_HEAD rather than a composed
+        "<remote>/<branch>".
+        """
         self._operations.append(f"fetch: {remote} {branch}")
+        for commit in self._commits_arriving_on_fetch:
+            self._commits.append(commit)
+            self._fetched_tip = commit.sha
+        self._commits_arriving_on_fetch.clear()
         self._tags.update(self._tags_arriving_on_fetch)
         self._tags_arriving_on_fetch.clear()
+        return "FETCH_HEAD"
 
     def push(self, remote: str, refspecs: list[str]) -> None:
         """Push refspecs, honouring any queued failures."""
@@ -177,7 +225,11 @@ class MockGitRepository(GitRepository):
             )
 
     def reset_hard(self, ref: str) -> None:
-        """Discard locally created commits, as a hard reset would."""
+        """Discard locally created commits, as a hard reset would.
+
+        Commits that arrived via ``fetch`` survive: they are on the branch
+        being reset onto, not local work being thrown away.
+        """
         self._operations.append(f"reset_hard: {ref}")
         local = set(self._local_commit_shas)
         self._commits = [c for c in self._commits if c.sha not in local]

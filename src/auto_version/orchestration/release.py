@@ -9,7 +9,7 @@ from auto_version.analysis.commit_parser import parse_conventional_commit
 from auto_version.analysis.version_calculator import calculate_version_bump
 from auto_version.changelog.generator import update_changelog
 from auto_version.config import Config
-from auto_version.git.interface import GitRepository, PushRejected
+from auto_version.git.interface import BranchDiverged, GitRepository, PushRejected
 from auto_version.models import ReleaseResult, Version, VersionBump
 from auto_version.versioning.updater import update_version_files
 
@@ -176,6 +176,13 @@ class ReleaseOrchestrator:
         run report "no release needed" — the version is derived from tags — so
         leaving one behind is only safe when the caller is told it is there.
 
+        A retry only ever resets onto a tip that already contains the commit
+        publishing started from, so it cannot discard anything this method did
+        not create. If the branch carries commits the remote does not have —
+        or the remote was rewritten — the release is rolled back to where it
+        started and the caller is asked to rebase, rather than having its
+        commits reset away.
+
         Args:
             remote: Remote to push to
             branch: Branch to push to (default: the current branch)
@@ -189,6 +196,8 @@ class ReleaseOrchestrator:
         Raises:
             ValueError: ``retries`` is negative, HEAD is detached and no
                 ``branch`` was given, or the worktree has local modifications.
+            BranchDiverged: The remote moved and this branch carries
+                commits it does not contain; the release was rolled back.
             PushRejected: The push failed for a reason retrying cannot fix, or
                 every attempt was rejected.
         """
@@ -214,6 +223,11 @@ class ReleaseOrchestrator:
                 "first."
             )
 
+        # The commit publishing starts from. A retry may only reset onto a tip
+        # that already contains it, so the reset can never discard more than
+        # this method created.
+        base_sha = self.repo.resolve("HEAD")
+
         attempt = 0
         while True:
             result = self.release(dry_run=False)
@@ -236,8 +250,30 @@ class ReleaseOrchestrator:
                 # genuinely fails this raises, and the reset below is skipped
                 # rather than orphaning the tag.
                 self.repo.delete_tag(result.tag)
-                self.repo.fetch(remote, branch)
-                self.repo.reset_hard(f"{remote}/{branch}")
+                # Reset to the ref fetch() names, not to a composed
+                # "<remote>/<branch>": the remote-tracking ref is only
+                # updated opportunistically, so composing it risks resetting
+                # to the tip we just lost the race to and repeating the same
+                # rejected push until the retries run out.
+                fetched = self.repo.fetch(remote, branch)
+
+                if not self.repo.is_ancestor(base_sha, fetched):
+                    # The branch carries commits the remote does not have, or
+                    # the remote was rewritten. Resetting onto the fetched tip
+                    # would discard work this method did not create, so put
+                    # the release back where it started and stop.
+                    self.repo.reset_hard(base_sha)
+                    raise BranchDiverged(
+                        f"{remote}/{branch} has moved, and this branch has "
+                        f"commits that are not on it, so the release cannot "
+                        f"be recomputed without discarding them. The release "
+                        f"was rolled back to {base_sha[:7]} and nothing was "
+                        f"published. Rebase onto {remote}/{branch} and re-run."
+                        f"\n\nUnderlying push failure:\n{exc}",
+                        non_fast_forward=True,
+                    ) from exc
+
+                self.repo.reset_hard(fetched)
                 if attempt >= retries:
                     raise
                 attempt += 1

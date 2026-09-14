@@ -251,9 +251,28 @@ class PyGit2Repository(GitRepository):
             self._repo.index.add(str(rel_path))
         self._repo.index.write()
 
-    def fetch(self, remote: str, branch: str) -> None:
-        """Fetch a branch from a remote, updating its remote-tracking ref."""
+    def fetch(self, remote: str, branch: str) -> str:
+        """Fetch a branch from a remote and return the ref that names its tip.
+
+        Returns ``FETCH_HEAD`` rather than ``<remote>/<branch>`` because the
+        remote-tracking ref is not reliably updated by a command-line
+        refspec. Git updates it *opportunistically*, only when the remote has
+        a matching configured fetch refspec, so:
+
+        * a named remote with the usual ``+refs/heads/*:refs/remotes/<name>/*``
+          does get updated (the common case);
+        * a remote with no configured fetch refspec does **not**, leaving the
+          tracking ref on the pre-fetch tip;
+        * a URL passed instead of a remote name has no tracking ref at all —
+          ``refs/remotes/<url>/<branch>`` does not resolve.
+
+        Resetting to a stale tracking ref would silently re-derive the release
+        from the tip we just lost the race to, and repeat the same rejected
+        push until the retries ran out. ``FETCH_HEAD`` is correct in all three
+        cases: it names exactly what this fetch just retrieved.
+        """
         self._run_git("fetch", remote, branch)
+        return "FETCH_HEAD"
 
     def push(self, remote: str, refspecs: list[str]) -> None:
         """Push refspecs to a remote as a single all-or-nothing update.
@@ -307,6 +326,17 @@ class PyGit2Repository(GitRepository):
             f"git tag -d {name} failed (exit {completed.returncode}): "
             f"{completed.stderr.strip()}"
         )
+
+    def resolve(self, ref: str) -> str:
+        """Resolve a ref to its commit SHA."""
+        return self._run_git("rev-parse", ref).stdout.strip()
+
+    def is_ancestor(self, ancestor: str, descendant: str) -> bool:
+        """Whether ``ancestor`` is reachable from ``descendant``."""
+        completed = self._run_git(
+            "merge-base", "--is-ancestor", ancestor, descendant, check=False
+        )
+        return completed.returncode == 0
 
     def is_dirty(self) -> bool:
         """Whether tracked files have staged or unstaged modifications."""

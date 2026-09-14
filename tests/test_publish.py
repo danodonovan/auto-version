@@ -2,9 +2,10 @@
 
 All tests use MockGitRepository (never real git). The mock is programmed with
 ``queue_push_failures()`` to simulate losing a race to a concurrent release
-job, and with ``add_tag_arriving_on_fetch()`` to make the winner's tag appear
-when we re-sync — so the recomputed version is derived from the new tip, just
-as it would be against a real remote.
+job, and with ``add_release_arriving_on_fetch()`` to make the winner's commit
+*and* tag appear when we re-sync. Both halves matter: a tag whose commit is
+missing cannot be resolved, so the mock would treat all history as unreleased
+and a recomputed version would look plausible for the wrong reason.
 
 ``sleep`` is injected throughout so the backoff does not slow the suite.
 """
@@ -27,6 +28,21 @@ def _config(tmp_path: Path) -> Config:
         version_toml=["pyproject.toml:project.version"],
         path_filters=["."],
         package_root=tmp_path,
+    )
+
+
+def _release_commit(sha: str, package: str) -> CommitInfo:
+    """A `release:` commit for `package`, as the winning job would push."""
+    return CommitInfo(
+        sha=sha,
+        short_sha=sha[:7],
+        message=f"release: {package} 1.0.1 [skip ci]",
+        commit_type="release",
+        scope=None,
+        description=f"{package} 1.0.1",
+        body="",
+        timestamp=datetime.now(timezone.utc),
+        affected_files=[Path(f"{package}/pyproject.toml")],
     )
 
 
@@ -107,14 +123,20 @@ def test_pushes_to_named_remote_and_branch(repo, package):
 # --- losing the race ---
 
 
-def test_recomputes_version_after_rejected_push(repo, package):
-    """The losing job re-derives its version against the winner's tag.
+def test_recomputes_against_the_winning_release(repo, package):
+    """The loser re-derives its version from history that now contains the winner.
 
-    This is the case that breaks today: both jobs compute 1.0.1, one lands,
-    and the other must become 1.0.2 rather than replaying a stale 1.0.1.
+    The winner's release commit *and* its tag must both arrive. Modelling only
+    the tag makes `get_commits_since` unable to resolve it, so the mock treats
+    all history as unreleased and any recomputed version looks plausible — the
+    test would then pass for a reason the real code never exercises.
+
+    Here kg-1.0.1 is taken by the winner and a further kg commit landed after
+    it, so the honest answer is 1.0.2.
     """
     repo.queue_push_failures(1)
-    repo.add_tag_arriving_on_fetch("kg-1.0.1", "winner")
+    repo.add_release_arriving_on_fetch(_release_commit("winner", "kg"), "kg-1.0.1")
+    repo.add_release_arriving_on_fetch(_commit("fix2", "fix: landed after"))
 
     result = _publish(repo, package)
 
@@ -126,6 +148,38 @@ def test_recomputes_version_after_rejected_push(repo, package):
     ]
 
 
+def test_reports_nothing_to_do_when_the_winner_released_our_commits(repo, package):
+    """Losing to the *same* package is not an error — the work is already out.
+
+    The winner's release covered exactly the commits we were releasing, so
+    after resyncing there is nothing left. NONE is the correct answer, and no
+    second push should be attempted.
+    """
+    repo.queue_push_failures(1)
+    repo.add_release_arriving_on_fetch(_release_commit("winner", "kg"), "kg-1.0.1")
+
+    result = _publish(repo, package)
+
+    assert result.bump_type == VersionBump.NONE
+    pushes = [op for op in repo.get_operations() if op.startswith("push:")]
+    assert pushes == ["push: origin HEAD:refs/heads/main refs/tags/kg-1.0.1"]
+
+
+def test_recomputes_when_another_package_wins_the_race(repo, package):
+    """The healnet case: two packages releasing from one merge.
+
+    The winner's tag is in a different namespace, so our own version is
+    unaffected - we simply retry onto the new tip and publish 1.0.1.
+    """
+    repo.queue_push_failures(1)
+    repo.add_release_arriving_on_fetch(_release_commit("winner", "dwpc"), "dwpc-1.0.1")
+
+    result = _publish(repo, package)
+
+    assert str(result.new_version) == "1.0.1"
+    assert len([op for op in repo.get_operations() if op.startswith("push:")]) == 2
+
+
 def test_discards_stale_tag_before_resetting(repo, package):
     """The stale tag is deleted *before* the reset that orphans its commit.
 
@@ -134,23 +188,28 @@ def test_discards_stale_tag_before_resetting(repo, package):
     version calculation reads.
     """
     repo.queue_push_failures(1)
-    repo.add_tag_arriving_on_fetch("kg-1.0.1", "winner")
+    repo.add_release_arriving_on_fetch(_release_commit("winner", "dwpc"), "dwpc-1.0.1")
 
     _publish(repo, package)
 
     ops = repo.get_operations()
-    assert ops.index("delete_tag: kg-1.0.1") < ops.index("reset_hard: origin/main")
-    assert ops.index("reset_hard: origin/main") > ops.index("fetch: origin main")
+    assert ops.index("delete_tag: kg-1.0.1") < ops.index("reset_hard: FETCH_HEAD")
+    assert ops.index("reset_hard: FETCH_HEAD") > ops.index("fetch: origin main")
 
 
 def test_survives_several_consecutive_losses(repo, package):
-    """Retrying continues while attempts remain."""
+    """Retrying continues while attempts remain.
+
+    The winner is another package, so our version is unchanged by the race —
+    what this asserts is that losing twice still ends in a published release
+    rather than exhausting.
+    """
     repo.queue_push_failures(2)
-    repo.add_tag_arriving_on_fetch("kg-1.0.1", "winner")
+    repo.add_release_arriving_on_fetch(_release_commit("winner", "dwpc"), "dwpc-1.0.1")
 
     result = _publish(repo, package, retries=3)
 
-    assert str(result.new_version) == "1.0.2"
+    assert str(result.new_version) == "1.0.1"
     assert len([op for op in repo.get_operations() if op.startswith("push:")]) == 3
 
 
@@ -276,7 +335,7 @@ def test_discards_the_release_when_every_attempt_is_rejected(repo, package):
 
     ops = repo.get_operations()
     assert "delete_tag: kg-1.0.1" in ops
-    assert "reset_hard: origin/main" in ops
+    assert "reset_hard: FETCH_HEAD" in ops
     # the tag is gone, so a re-run recomputes rather than reporting NONE
     assert "kg-1.0.1" not in repo.get_tags()
 
@@ -311,3 +370,45 @@ def test_does_not_reset_when_tag_deletion_fails(repo, package):
         _publish(repo, package)
 
     assert not [op for op in repo.get_operations() if op.startswith("reset_hard:")]
+
+
+def test_rolls_back_rather_than_resetting_away_local_commits(repo, package):
+    """A reset may only land on a tip containing where publishing started.
+
+    `is_dirty` catches uncommitted work, but a branch can be perfectly clean
+    and still carry commits the remote has never seen. Resetting onto the
+    fetched tip would delete those along with the release, so publishing
+    rolls back to its own starting point and asks for a rebase instead.
+    """
+    repo.queue_push_failures(1)
+    repo.add_release_arriving_on_fetch(_release_commit("winner", "dwpc"), "dwpc-1.0.1")
+    repo.set_diverged_from_remote(True)
+
+    with pytest.raises(PushRejected, match="commits that are not on it"):
+        _publish(repo, package)
+
+    ops = repo.get_operations()
+    # rolled back to the pre-release commit, not to the fetched tip
+    assert "reset_hard: fix1" in ops
+    assert "reset_hard: FETCH_HEAD" not in ops
+    # and the release it created was cleaned up
+    assert "delete_tag: kg-1.0.1" in ops
+    assert "kg-1.0.1" not in repo.get_tags()
+    # only ever one push attempt: retrying cannot help here
+    assert len([op for op in ops if op.startswith("push:")]) == 1
+
+
+def test_checks_containment_against_the_fetched_tip(repo, package):
+    """The containment test uses FETCH_HEAD, not a composed remote ref.
+
+    `git fetch <remote> <branch>` updates the remote-tracking ref only
+    opportunistically, so comparing against "<remote>/<branch>" can consult a
+    stale ref — or one that does not exist when the remote is a URL.
+    """
+    repo.queue_push_failures(1)
+    repo.add_release_arriving_on_fetch(_release_commit("winner", "dwpc"), "dwpc-1.0.1")
+
+    _publish(repo, package)
+
+    checks = [op for op in repo.get_operations() if op.startswith("is_ancestor:")]
+    assert checks == ["is_ancestor: fix1 in FETCH_HEAD"]
