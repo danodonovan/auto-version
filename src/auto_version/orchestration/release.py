@@ -229,7 +229,15 @@ class ReleaseOrchestrator:
         # The commit publishing starts from. A retry may only reset onto a tip
         # that already contains it, so the reset can never discard more than
         # this method created.
-        base_sha = self.repo.resolve("HEAD")
+        try:
+            base_sha = self.repo.resolve("HEAD")
+        except Exception:
+            # Unborn repository: no commits, so there is nothing to release
+            # and nothing to roll back to. Let release() report that the
+            # normal way instead of surfacing a rev-parse failure. (Usually
+            # the dirty-worktree check catches this first, since an unborn
+            # repo's files are untracked — but not if they are ignored.)
+            return self.release(dry_run=False)
 
         attempt = 0
         while True:
