@@ -41,4 +41,4 @@ auto-version status
    - `feat: add new feature` (minor bump)
    - `fix: correct bug` (patch bump)
 3. Run `auto-version release` to create a release
-4. Push: `git push && git push --tags`
+4. Publish: `auto-version release --push` (or, for a release already created, the `git push --atomic` command it prints)

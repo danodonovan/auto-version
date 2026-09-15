@@ -185,7 +185,7 @@ auto-version release
 # - Created tag: mypackage-1.2.0
 
 # Push
-git push && git push --tags
+auto-version release --push    # creates and publishes atomically
 ```
 
 ## Comparison to Python-Semantic-Release
