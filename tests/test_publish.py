@@ -526,6 +526,7 @@ def test_rolls_back_when_the_build_command_leaves_files_behind(repo, package):
         orchestrator.release_and_publish(sleep=lambda _: None)
 
     ops = repo.get_operations()
+    assert "delete_tag: kg-1.0.1" not in ops
     assert "reset_hard: fix1" not in ops
     assert "reset_hard: FETCH_HEAD" not in ops
 
@@ -549,7 +550,8 @@ def test_does_not_reset_on_fetch_failure_when_build_leftovers_exist(repo, packag
         orchestrator.release_and_publish(sleep=lambda _: None)
 
     ops = repo.get_operations()
-    assert "delete_tag: kg-1.0.1" in ops
+    assert "delete_tag: kg-1.0.1" not in ops
+    assert not [op for op in ops if op.startswith("fetch:")]
     assert not [op for op in ops if op.startswith("reset_hard:")]
 
 
