@@ -10,7 +10,7 @@ from auto_version.analysis.version_calculator import calculate_version_bump
 from auto_version.changelog.generator import update_changelog
 from auto_version.config import Config
 from auto_version.git.interface import (BranchDiverged, GitRepository,
-                                        PushRejected)
+                                        PushRejected, redact_remote)
 from auto_version.models import ReleaseResult, Version, VersionBump
 from auto_version.versioning.updater import update_version_files
 
@@ -202,6 +202,8 @@ class ReleaseOrchestrator:
             PushRejected: The push failed for a reason retrying cannot fix, or
                 every attempt was rejected.
         """
+        shown_remote = redact_remote(remote)
+
         if retries < 0:
             raise ValueError(f"retries must be zero or greater, got {retries}")
 
@@ -277,16 +279,33 @@ class ReleaseOrchestrator:
                     # than composing "<remote>/<branch>": remote may be a URL,
                     # which would render as a ref nobody can rebase onto.
                     raise BranchDiverged(
-                        f"{branch} on {remote} has moved, and this branch has "
+                        f"{branch} on {shown_remote} has moved, and this "
+                        f"branch has "
                         f"commits that are not on it, so the release cannot "
                         f"be recomputed without discarding them. The release "
                         f"was rolled back to {base_sha[:7]} and nothing was "
                         f"published. Rebase onto the fetched {branch} "
-                        f"(git fetch {remote} {branch} && git rebase "
+                        f"(git fetch {shown_remote} {branch} && git rebase "
                         f"FETCH_HEAD) and re-run."
                         f"\n\nUnderlying push failure:\n{exc}",
                         non_fast_forward=True,
                     ) from exc
+
+                if self.repo.is_dirty():
+                    # release() commits what it creates, so anything left here
+                    # came from the configured build command writing outside
+                    # its declared assets. The reset below would destroy it,
+                    # and the pre-flight check ran before that command existed
+                    # to produce it.
+                    self.repo.reset_hard(base_sha)
+                    raise ValueError(
+                        "the build command left files in the worktree that are "
+                        "not part of the release, and retrying would discard "
+                        f"them. The release was rolled back to {base_sha[:7]} "
+                        "and nothing was published. Add them to the release's "
+                        "assets, ignore them, or have the build command clean "
+                        "up after itself."
+                    )
 
                 self.repo.reset_hard(fetched)
                 # This attempt's starting point, and the only state we promise

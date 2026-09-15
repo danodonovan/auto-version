@@ -233,14 +233,22 @@ class MockGitRepository(GitRepository):
             )
 
     def reset_hard(self, ref: str) -> None:
-        """Discard locally created commits, as a hard reset would.
+        """Move history to ``ref``, discarding anything after it.
 
-        Commits that arrived via ``fetch`` survive: they are on the branch
-        being reset onto, not local work being thrown away.
+        Honours the ref rather than only dropping locally created commits:
+        the rollback paths reset to a *earlier* commit than the fetched tip,
+        and a mock that ignored the argument would report the fetched tip as
+        HEAD afterwards — letting a rollback test pass without the rollback
+        having restored anything.
         """
         self._operations.append(f"reset_hard: {ref}")
+        target = self.resolve(ref)
         local = set(self._local_commit_shas)
-        self._commits = [c for c in self._commits if c.sha not in local]
+        commits = [c for c in self._commits if c.sha not in local]
+        index = next((i for i, c in enumerate(commits) if c.sha == target), None)
+        if index is not None:
+            commits = commits[: index + 1]
+        self._commits = commits
         self._local_commit_shas.clear()
         self._staged_files.clear()
 

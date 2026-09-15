@@ -393,6 +393,8 @@ def test_rolls_back_rather_than_resetting_away_local_commits(repo, package):
     # rolled back to the pre-release commit, not to the fetched tip
     assert "reset_hard: fix1" in ops
     assert "reset_hard: FETCH_HEAD" not in ops
+    # and the rollback actually restored it, not merely logged the intent
+    assert repo.resolve("HEAD") == "fix1"
     # and the release it created was cleaned up
     assert "delete_tag: kg-1.0.1" in ops
     assert "kg-1.0.1" not in repo.get_tags()
@@ -455,3 +457,33 @@ def test_advances_the_baseline_after_each_successful_retry(repo, package):
     assert checks[0] == "is_ancestor: fix1 in FETCH_HEAD"
     assert checks[1] != checks[0]
     assert checks[1] == "is_ancestor: winner1 in FETCH_HEAD"
+
+
+def test_rolls_back_when_the_build_command_leaves_files_behind(repo, package):
+    """A build command can dirty the worktree after the pre-flight check.
+
+    release() commits what it creates, so anything still untracked when the
+    retry begins came from the configured build command writing outside its
+    declared assets — and the reset would destroy it. The pre-flight check
+    cannot catch this: it runs before the command that produces the files.
+    """
+    repo.queue_push_failures(1)
+    repo.add_release_arriving_on_fetch(_release_commit("winner", "dwpc"), "dwpc-1.0.1")
+
+    orchestrator = ReleaseOrchestrator(repo, _config(package))
+    original_release = orchestrator.release
+
+    def release_then_dirty(*args, **kwargs):
+        result = original_release(*args, **kwargs)
+        repo.set_dirty(True)  # the build command's leftovers
+        return result
+
+    orchestrator.release = release_then_dirty  # type: ignore[method-assign]
+
+    with pytest.raises(ValueError, match="build command left files"):
+        orchestrator.release_and_publish(sleep=lambda _: None)
+
+    ops = repo.get_operations()
+    assert "reset_hard: fix1" in ops  # rolled back to where we began
+    assert "reset_hard: FETCH_HEAD" not in ops  # never reset onto the new tip
+    assert repo.resolve("HEAD") == "fix1"
