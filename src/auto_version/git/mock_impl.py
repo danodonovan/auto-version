@@ -243,13 +243,18 @@ class MockGitRepository(GitRepository):
         """
         self._operations.append(f"reset_hard: {ref}")
         target = self.resolve(ref)
-        local = set(self._local_commit_shas)
-        commits = [c for c in self._commits if c.sha not in local]
+        commits = self._commits.copy()
         index = next((i for i, c in enumerate(commits) if c.sha == target), None)
         if index is not None:
             commits = commits[: index + 1]
+        else:
+            local = set(self._local_commit_shas)
+            commits = [c for c in commits if c.sha not in local]
         self._commits = commits
-        self._local_commit_shas.clear()
+        remaining = {c.sha for c in commits}
+        self._local_commit_shas = [
+            sha for sha in self._local_commit_shas if sha in remaining
+        ]
         self._staged_files.clear()
 
     def delete_tag(self, name: str) -> None:
