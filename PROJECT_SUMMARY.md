@@ -174,8 +174,9 @@ cat pyproject.toml
 # Check status
 auto-version release --dry-run
 
-# Create release
-auto-version release
+# Create the release AND publish it: commit + tag in one atomic push,
+# retried against the new tip if another release lands first
+auto-version release --push
 
 # Result:
 # - Updated pyproject.toml: version = "1.2.0"
@@ -183,9 +184,12 @@ auto-version release
 # - Updated CHANGELOG.md with new section
 # - Created commit: "release: mypackage 1.2.0"
 # - Created tag: mypackage-1.2.0
+# - Pushed commit and tag to origin atomically
 
-# Push
-auto-version release --push    # creates and publishes atomically
+# To create locally WITHOUT publishing, run `auto-version release` instead
+# and push later with the `git push --atomic ...` command it prints.
+# (Do not run `--push` afterwards: the release already exists, so it
+# reports "no release needed" and publishes nothing.)
 ```
 
 ## Comparison to Python-Semantic-Release

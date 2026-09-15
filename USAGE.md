@@ -212,17 +212,27 @@ agree with each other and with the branch they are landing on.
 Failures that retrying cannot fix (bad credentials, unknown remote) are not
 retried.
 
-### What `--push` leaves behind when it fails
+### Every outcome of `--push`, and what is left where
 
-The two failure modes need opposite handling, so they behave differently:
+| Outcome | Exit | Your checkout afterwards | Remote | What to do |
+| --- | --- | --- | --- | --- |
+| Published | 0 | release commit + tag, on the current tip | commit and tag landed together | nothing |
+| Nothing to release | 2 | unchanged | unchanged | nothing |
+| Push failed: credentials, hook, unknown remote | 4 | release **kept** — it is valid and based on the current tip | unchanged | fix the cause, then run the `git push --atomic …` command from the error |
+| Rejected as non-fast-forward, retry succeeded | 0 | release **recomputed** on the new tip | landed | nothing |
+| Rejected, retries exhausted | 4 | release **discarded**; back at the commit you started from | unchanged | re-run |
+| Branch has commits the remote lacks | 4 | release rolled back; **your commits intact** | unchanged | `git fetch <remote> <branch> && git rebase FETCH_HEAD`, re-run |
+| Build command dirtied the tree after the release was created | 3 | release rolled back with `--keep`; **the leaked files intact** | unchanged | fix the build command, declare the files as assets, or ignore them — then re-run |
+| Dirty worktree / detached HEAD (pre-flight) | 3 | unchanged — nothing was created | unchanged | commit or stash / pass `--branch` |
 
-| Failure | Exit | Local state |
-| --- | --- | --- |
-| Rejected every attempt (the remote kept moving) | 4 | **Discarded.** The version it claimed may have been taken by the release that won, so it is recomputed on a re-run. |
-| Push failed for another reason (credentials, hook, unknown remote) | 4 | **Kept.** The release is correct and only publication failed, so it is left for you to push by hand — the command is in the error message. |
+Two properties hold on every row. **Only what `--push` created is ever undone**: every
+reset is `git reset --keep`, which refuses to overwrite a file with local changes, and a
+retry only lands on a tip that contains the commit you started from. **A kept release is
+always reported as kept**, because any local release tag makes the next run say "no
+release needed".
 
-The distinction matters because any local release tag makes the next run report
-"no release needed". A kept release is therefore always reported as kept.
+Ignored files never count as dirty — build output under `.gitignore` neither blocks the
+pre-flight check nor a retry.
 
 `--push` refuses to run on a dirty worktree, because retrying resets the
 checkout. Untracked files count: `git reset --hard` spares an untracked file

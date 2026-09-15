@@ -40,5 +40,7 @@ auto-version status
 2. Commit using conventional commit messages:
    - `feat: add new feature` (minor bump)
    - `fix: correct bug` (patch bump)
-3. Run `auto-version release` to create a release
-4. Publish: `auto-version release --push` (or, for a release already created, the `git push --atomic` command it prints)
+3. Run `auto-version release --push` to create the release and publish it in one atomic push
+   (or `auto-version release` to create it locally only, then push later with the
+   `git push --atomic ...` command it prints — not with `--push`, which would report
+   "no release needed" because the release already exists)
