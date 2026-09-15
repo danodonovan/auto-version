@@ -226,10 +226,12 @@ class PyGit2Repository(GitRepository):
         "HEAD". ``--push`` is the first caller, so this went unnoticed.
 
         An unborn HEAD (a fresh repository with no commits) also has no
-        branch to push to, so it reports None as well.
+        branch to push to, so it reports None as well. That is checked
+        explicitly rather than left to the ``GitError`` that reading
+        ``head`` would raise, so the intent is visible at the call site.
         """
         try:
-            if self._repo.head_is_detached:
+            if self._repo.head_is_unborn or self._repo.head_is_detached:
                 return None
             return str(self._repo.head.shorthand)
         except pygit2.GitError:
@@ -270,8 +272,17 @@ class PyGit2Repository(GitRepository):
         from the tip we just lost the race to, and repeat the same rejected
         push until the retries ran out. ``FETCH_HEAD`` is correct in all three
         cases: it names exactly what this fetch just retrieved.
+
+        ``--tags`` is not optional. Naming a refspec on the command line
+        turns off git's usual tag auto-following, so ``git fetch <remote>
+        <branch>`` brings back **no tags at all** — not merely when
+        ``remote.<name>.tagOpt=--no-tags`` is set. Since the version is
+        derived from tags, a resync without them recomputes against a tag
+        history that is missing the release which just won, produces the same
+        version again, and gets rejected for a tag that already exists on the
+        remote.
         """
-        self._run_git("fetch", remote, branch)
+        self._run_git("fetch", "--tags", remote, branch)
         return "FETCH_HEAD"
 
     def push(self, remote: str, refspecs: list[str]) -> None:
