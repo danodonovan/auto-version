@@ -289,6 +289,12 @@ class ReleaseOrchestrator:
                     ) from exc
 
                 self.repo.reset_hard(fetched)
+                # This attempt's starting point, and the only state we promise
+                # to restore, is now the tip we just landed on. Leaving it at
+                # the original HEAD would let a later attempt accept a fetched
+                # tip that dropped what this one accepted — exactly the
+                # rewritten-history case the containment check exists to catch.
+                base_sha = self.repo.resolve("HEAD")
                 if attempt >= retries:
                     raise
                 attempt += 1

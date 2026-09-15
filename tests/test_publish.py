@@ -272,10 +272,12 @@ def test_backoff_is_bounded_and_jittered():
 
 
 def test_refuses_a_dirty_worktree(repo, package):
-    """A retry resets the checkout, so local modifications must block first.
+    """A retry resets the checkout, so local state must block first.
 
     The check has to precede the first release() call, because release()
     dirties the tree itself by writing version files and the changelog.
+    Untracked files count too: a reset spares them only while their path is
+    absent from the tree being reset onto.
     """
     repo.set_dirty(True)
 
@@ -432,3 +434,24 @@ def test_rolls_back_if_the_resync_fetch_fails(repo, package):
     assert "delete_tag: kg-1.0.1" in ops
     assert "reset_hard: fix1" in ops  # back to the pre-release commit
     assert "kg-1.0.1" not in repo.get_tags()
+
+
+def test_advances_the_baseline_after_each_successful_retry(repo, package):
+    """The containment check must compare against *this* attempt's start.
+
+    Left at the original pre-release HEAD, attempt 2 would happily accept a
+    fetched tip that dropped what attempt 1 already reset onto — the
+    rewritten-history case the check exists to catch — and the fetch-error
+    rollback would rewind further than this attempt began.
+    """
+    repo.queue_push_failures(2)
+    repo.add_release_arriving_on_fetch(_release_commit("winner1", "dwpc"), "dwpc-1.0.1")
+
+    _publish(repo, package, retries=3)
+
+    checks = [op for op in repo.get_operations() if op.startswith("is_ancestor:")]
+    # first attempt compares against the pre-release HEAD, the second against
+    # the tip the first attempt landed on — not the original again
+    assert checks[0] == "is_ancestor: fix1 in FETCH_HEAD"
+    assert checks[1] != checks[0]
+    assert checks[1] == "is_ancestor: winner1 in FETCH_HEAD"
