@@ -1,10 +1,24 @@
 """Abstract interface for git operations."""
 
+import re
 from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
 
 from auto_version.models import CommitInfo
+
+_CREDENTIAL_URL = re.compile(r"([A-Za-z][A-Za-z0-9+.\-]*://)[^/\s@]+@")
+
+
+def scrub_credentials(text: str) -> str:
+    """Replace userinfo in every URL within ``text`` with ``***``.
+
+    Works on arbitrary text, not just a bare remote, because credentials can
+    arrive in captured git output as well as in arguments we assembled
+    ourselves. scp-style remotes (``git@host:path``) are left alone: they
+    carry no secret, and rewriting them would make suggested commands wrong.
+    """
+    return _CREDENTIAL_URL.sub(r"\1***@", text)
 
 
 def redact_remote(remote: str) -> str:
@@ -16,14 +30,7 @@ def redact_remote(remote: str) -> str:
     the credential is stripped for display while callers keep the original
     for git itself.
     """
-    scheme, _, rest = remote.partition("://")
-    if not rest:
-        return remote  # a remote name, or scp-style git@host:path
-    netloc, slash, path = rest.partition("/")
-    if "@" not in netloc:
-        return remote
-    _, _, host = netloc.rpartition("@")
-    return f"{scheme}://***@{host}{slash}{path}"
+    return scrub_credentials(remote)
 
 
 class PushRejected(Exception):
