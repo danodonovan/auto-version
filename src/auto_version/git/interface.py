@@ -147,7 +147,6 @@ class GitRepository(ABC):
         """
         pass
 
-    @abstractmethod
     def fetch(self, remote: str, branch: str) -> str:
         """Fetch a branch from a remote and return a ref naming its tip.
 
@@ -163,9 +162,11 @@ class GitRepository(ABC):
         Returns:
             A ref that resolves to the fetched tip.
         """
-        pass
+        raise NotImplementedError(
+            "fetch() is required for release publishing (--push) but is not "
+            "implemented by this GitRepository."
+        )
 
-    @abstractmethod
     def push(self, remote: str, refspecs: list[str]) -> None:
         """Push refspecs to a remote as a single all-or-nothing update.
 
@@ -178,18 +179,22 @@ class GitRepository(ABC):
             PushRejected: The remote refused the update. Check
                 ``non_fast_forward`` to decide whether a retry can help.
         """
-        pass
+        raise NotImplementedError(
+            "push() is required for release publishing (--push) but is not "
+            "implemented by this GitRepository."
+        )
 
-    @abstractmethod
     def reset_hard(self, ref: str) -> None:
         """Discard local commits and working-tree changes, moving to ``ref``.
 
         Args:
             ref: Reference to reset onto (e.g. "origin/main")
         """
-        pass
+        raise NotImplementedError(
+            "reset_hard() is required for release publishing (--push) but is "
+            "not implemented by this GitRepository."
+        )
 
-    @abstractmethod
     def delete_tag(self, name: str) -> None:
         """Delete a tag from the local repository only.
 
@@ -200,9 +205,11 @@ class GitRepository(ABC):
         Args:
             name: Tag name to delete
         """
-        pass
+        raise NotImplementedError(
+            "delete_tag() is required for release publishing (--push) but is "
+            "not implemented by this GitRepository."
+        )
 
-    @abstractmethod
     def resolve(self, ref: str) -> str:
         """Resolve a ref to its commit SHA.
 
@@ -212,9 +219,11 @@ class GitRepository(ABC):
         Returns:
             The full commit SHA.
         """
-        pass
+        raise NotImplementedError(
+            "resolve() is required for release publishing (--push) but is not "
+            "implemented by this GitRepository."
+        )
 
-    @abstractmethod
     def is_ancestor(self, ancestor: str, descendant: str) -> bool:
         """Whether ``ancestor`` is reachable from ``descendant``.
 
@@ -226,9 +235,11 @@ class GitRepository(ABC):
             ancestor: Commit expected to be contained in ``descendant``
             descendant: Commit to search from
         """
-        pass
+        raise NotImplementedError(
+            "is_ancestor() is required for release publishing (--push) but is "
+            "not implemented by this GitRepository."
+        )
 
-    @abstractmethod
     def is_dirty(self) -> bool:
         """Whether the worktree holds local state that a reset would destroy.
 
@@ -237,4 +248,7 @@ class GitRepository(ABC):
         that tree tracks the path, the file is overwritten without warning.
         Ignored files do not count.
         """
-        pass
+        raise NotImplementedError(
+            "is_dirty() is required for release publishing (--push) but is not "
+            "implemented by this GitRepository."
+        )

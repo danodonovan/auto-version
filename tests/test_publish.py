@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from auto_version.config import Config
-from auto_version.git.interface import PushRejected
+from auto_version.git.interface import GitRepository, PushRejected
 from auto_version.git.mock_impl import MockGitRepository
 from auto_version.models import CommitInfo, VersionBump
 from auto_version.orchestration.release import ReleaseOrchestrator
@@ -484,9 +484,31 @@ def test_rolls_back_when_the_build_command_leaves_files_behind(repo, package):
         orchestrator.release_and_publish(sleep=lambda _: None)
 
     ops = repo.get_operations()
-    assert "reset_hard: fix1" in ops  # rolled back to where we began
-    assert "reset_hard: FETCH_HEAD" not in ops  # never reset onto the new tip
-    assert repo.resolve("HEAD") == "fix1"
+    assert "reset_hard: fix1" not in ops
+    assert "reset_hard: FETCH_HEAD" not in ops
+
+
+def test_does_not_reset_on_fetch_failure_when_build_leftovers_exist(repo, package):
+    """Fetch rollback refuses to discard post-release build leftovers."""
+    repo.queue_push_failures(1)
+    repo.fail_next_fetch()
+
+    orchestrator = ReleaseOrchestrator(repo, _config(package))
+    original_release = orchestrator.release
+
+    def release_then_dirty(*args, **kwargs):
+        result = original_release(*args, **kwargs)
+        repo.set_dirty(True)
+        return result
+
+    orchestrator.release = release_then_dirty  # type: ignore[method-assign]
+
+    with pytest.raises(ValueError, match="rollback would discard"):
+        orchestrator.release_and_publish(sleep=lambda _: None)
+
+    ops = repo.get_operations()
+    assert "delete_tag: kg-1.0.1" in ops
+    assert not [op for op in ops if op.startswith("reset_hard:")]
 
 
 def test_git_failures_do_not_leak_remote_credentials(monkeypatch):
@@ -510,7 +532,10 @@ def test_git_failures_do_not_leak_remote_credentials(monkeypatch):
 
     def explode(*args, **kwargs):
         raise subprocess.CalledProcessError(
-            128, ["git", "fetch", "--tags", secret_url, "main"]
+            128,
+            ["git", "fetch", "--tags", secret_url, "main"],
+            output=f"fatal: could not read from {secret_url}\n",
+            stderr=f"fatal: could not read from {secret_url}\n",
         )
 
     monkeypatch.setattr(subprocess, "run", explode)
@@ -521,3 +546,38 @@ def test_git_failures_do_not_leak_remote_credentials(monkeypatch):
     message = str(excinfo.value)
     assert "ghp_SECRET" not in message
     assert "***@nonexistent.invalid" in message
+    assert "ghp_SECRET" not in (excinfo.value.output or "")
+    assert "ghp_SECRET" not in (excinfo.value.stderr or "")
+
+
+def test_legacy_git_repository_subclasses_still_instantiate(package):
+    """Publish-only API additions should not break release-only implementations."""
+
+    class LegacyRepo(GitRepository):
+        def get_tags(self, pattern: str | None = None) -> list[str]:
+            return []
+
+        def get_commits_since(
+            self, since_ref: str | None, path_filters: list[str] | None = None
+        ) -> list[CommitInfo]:
+            return []
+
+        def get_changed_files(self, commit_sha: str) -> list[Path]:
+            return []
+
+        def create_tag(self, name: str, message: str, commit: str = "HEAD") -> None:
+            return None
+
+        def create_commit(self, message: str, files: list[Path]) -> str:
+            return "mock"
+
+        def get_current_branch(self) -> str | None:
+            return "main"
+
+        def get_repo_root(self) -> Path:
+            return package
+
+        def stage_files(self, files: list[Path]) -> None:
+            return None
+
+    LegacyRepo()

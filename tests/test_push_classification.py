@@ -155,6 +155,17 @@ def test_cas_failure_needs_the_whole_form_on_one_line():
     )
 
 
+def test_cas_failure_accepts_sha256_object_ids():
+    """SHA-256 repositories report 64-hex object ids in CAS failures."""
+    current = "a" * 64
+    expected = "b" * 64
+    output = (
+        "remote: error: cannot lock ref 'refs/heads/main': "
+        f"is at {current} but expected {expected}"
+    )
+    assert _is_non_fast_forward(output) is True
+
+
 # --- credentials must not reach logs ---
 
 

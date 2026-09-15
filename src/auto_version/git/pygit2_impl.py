@@ -39,7 +39,7 @@ _NON_FAST_FORWARD_MARKERS = (
 # the two phrases independently across the whole output would let a server
 # emit them in unrelated `remote:` lines and be read as contention.
 _CAS_FAILURE = re.compile(
-    r"cannot lock ref.*\bis at\s+[0-9a-f]{7,40}\s+but expected\s+[0-9a-f]{7,40}",
+    r"cannot lock ref.*\bis at\s+[0-9a-f]{7,64}\s+but expected\s+[0-9a-f]{7,64}",
     re.IGNORECASE,
 )
 
@@ -423,6 +423,10 @@ class PyGit2Repository(GitRepository):
             )
         except subprocess.CalledProcessError as exc:
             exc.cmd = [scrub_credentials(str(arg)) for arg in exc.cmd]
+            if isinstance(exc.output, str):
+                exc.output = scrub_credentials(exc.output)
+            if isinstance(exc.stderr, str):
+                exc.stderr = scrub_credentials(exc.stderr)
             raise
 
     def _matches_pattern(self, tag_name: str, pattern: str) -> bool:
