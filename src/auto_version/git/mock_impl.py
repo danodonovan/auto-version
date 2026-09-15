@@ -25,6 +25,7 @@ class MockGitRepository(GitRepository):
         self._current_branch: str | None = "main"
         self._dirty = False
         self._tag_delete_failures: set[str] = set()
+        self._fetch_fails = False
 
     def add_commit(self, commit: CommitInfo) -> None:
         """Add a commit to the mock repository."""
@@ -198,6 +199,10 @@ class MockGitRepository(GitRepository):
         self._staged_files.extend(files)
         self._operations.append(f"stage_files: {[str(f) for f in files]}")
 
+    def fail_next_fetch(self) -> None:
+        """Make the next ``fetch`` raise, modelling a transient remote failure."""
+        self._fetch_fails = True
+
     def fetch(self, remote: str, branch: str) -> str:
         """Fetch a branch, revealing any release registered to arrive.
 
@@ -206,6 +211,9 @@ class MockGitRepository(GitRepository):
         "<remote>/<branch>".
         """
         self._operations.append(f"fetch: {remote} {branch}")
+        if self._fetch_fails:
+            self._fetch_fails = False
+            raise RuntimeError("mock: fetch failed")
         for commit in self._commits_arriving_on_fetch:
             self._commits.append(commit)
             self._fetched_tip = commit.sha

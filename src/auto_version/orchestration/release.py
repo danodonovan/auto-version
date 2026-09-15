@@ -9,7 +9,8 @@ from auto_version.analysis.commit_parser import parse_conventional_commit
 from auto_version.analysis.version_calculator import calculate_version_bump
 from auto_version.changelog.generator import update_changelog
 from auto_version.config import Config
-from auto_version.git.interface import BranchDiverged, GitRepository, PushRejected
+from auto_version.git.interface import (BranchDiverged, GitRepository,
+                                        PushRejected)
 from auto_version.models import ReleaseResult, Version, VersionBump
 from auto_version.versioning.updater import update_version_files
 
@@ -255,7 +256,16 @@ class ReleaseOrchestrator:
                 # updated opportunistically, so composing it risks resetting
                 # to the tip we just lost the race to and repeating the same
                 # rejected push until the retries run out.
-                fetched = self.repo.fetch(remote, branch)
+                try:
+                    fetched = self.repo.fetch(remote, branch)
+                except Exception:
+                    # The tag is already gone, so failing here would strand an
+                    # untagged release commit at HEAD — which a later run
+                    # cannot tell from unreleased work, and would release
+                    # again on top of, duplicating the commit and its
+                    # changelog entry. Put the branch back instead.
+                    self.repo.reset_hard(base_sha)
+                    raise
 
                 if not self.repo.is_ancestor(base_sha, fetched):
                     # The branch carries commits the remote does not have, or
@@ -263,12 +273,17 @@ class ReleaseOrchestrator:
                     # would discard work this method did not create, so put
                     # the release back where it started and stop.
                     self.repo.reset_hard(base_sha)
+                    # Describe the target as "<branch> on <remote>" rather
+                    # than composing "<remote>/<branch>": remote may be a URL,
+                    # which would render as a ref nobody can rebase onto.
                     raise BranchDiverged(
-                        f"{remote}/{branch} has moved, and this branch has "
+                        f"{branch} on {remote} has moved, and this branch has "
                         f"commits that are not on it, so the release cannot "
                         f"be recomputed without discarding them. The release "
                         f"was rolled back to {base_sha[:7]} and nothing was "
-                        f"published. Rebase onto {remote}/{branch} and re-run."
+                        f"published. Rebase onto the fetched {branch} "
+                        f"(git fetch {remote} {branch} && git rebase "
+                        f"FETCH_HEAD) and re-run."
                         f"\n\nUnderlying push failure:\n{exc}",
                         non_fast_forward=True,
                     ) from exc

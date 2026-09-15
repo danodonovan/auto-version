@@ -412,3 +412,23 @@ def test_checks_containment_against_the_fetched_tip(repo, package):
 
     checks = [op for op in repo.get_operations() if op.startswith("is_ancestor:")]
     assert checks == ["is_ancestor: fix1 in FETCH_HEAD"]
+
+
+def test_rolls_back_if_the_resync_fetch_fails(repo, package):
+    """A failed resync must not strand an untagged release commit.
+
+    The tag is deleted before the fetch, so bailing out there would leave the
+    version bump and changelog committed at HEAD with nothing marking them as
+    released. A later run cannot tell that from unreleased work and releases
+    on top of it, duplicating the commit and its changelog entry.
+    """
+    repo.queue_push_failures(1)
+    repo.fail_next_fetch()
+
+    with pytest.raises(RuntimeError, match="fetch failed"):
+        _publish(repo, package)
+
+    ops = repo.get_operations()
+    assert "delete_tag: kg-1.0.1" in ops
+    assert "reset_hard: fix1" in ops  # back to the pre-release commit
+    assert "kg-1.0.1" not in repo.get_tags()
