@@ -218,7 +218,7 @@ retried.
 | --- | --- | --- | --- | --- |
 | Published | 0 | release commit + tag, on the current tip | commit and tag landed together | nothing |
 | Nothing to release | 2 | unchanged | unchanged | nothing |
-| Push failed: credentials, hook, unknown remote | 4 | release **kept** — it is valid and based on the current tip | unchanged | fix the cause, then run the `git push --atomic …` command from the error |
+| Push failed: credentials, hook, unknown remote | 4 | release **kept** — it is valid and based on the current tip | unchanged | fix the cause, then run the `git push --atomic …` command from the error against your original remote (a URL remote's credentials are redacted in the message) |
 | Rejected as non-fast-forward, retry succeeded | 0 | release **recomputed** on the new tip | landed | nothing |
 | Rejected, retries exhausted | 4 | release **discarded**; back at the commit you started from | unchanged | re-run |
 | Branch has commits the remote lacks | 4 | release rolled back; **your commits intact** | unchanged | `git fetch <remote> <branch> && git rebase FETCH_HEAD`, re-run |

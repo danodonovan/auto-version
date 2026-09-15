@@ -291,8 +291,10 @@ def release(
             click.echo(
                 "\nThe release was created locally but not published. It is "
                 "correct — only the push failed — so it has been left in "
-                "place. Fix the cause above, then re-run the exact git push "
-                "shown in the error to publish it.\n"
+                "place. Fix the cause above, then re-run the git push shown in "
+                "the error against your original remote — any credentials in "
+                "a URL remote are redacted in that message, so it is not "
+                "runnable exactly as shown.\n"
                 "Until then this package will report 'no release needed', "
                 "because the local tag already claims that version.",
                 err=True,
