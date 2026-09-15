@@ -94,7 +94,7 @@ Tests use `MockGitRepository` (never real git). Fixtures are in `tests/conftest.
 For publication (`release_and_publish`), the mock also simulates contention and
 the states `--push` must refuse:
 - `queue_push_failures(count, non_fast_forward=True)` — make the next `count` pushes raise `PushRejected`
-- `add_tag_arriving_on_fetch(name, sha)` — reveal a tag on the next `fetch()`, modelling the winning job's release landing
+- `add_release_arriving_on_fetch(commit, tag=None)` — reveal the winning job's release (its commit, and optionally its tag) on the next `fetch()`
 - `set_dirty(True)` — report tracked modifications
 - `set_current_branch(None)` — model a detached HEAD
 - `fail_tag_delete(name)` — make `delete_tag` raise, as a ref lock would

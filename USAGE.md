@@ -154,7 +154,7 @@ Output:
   Tag: mypackage-0.2.0
 
 💡 Run without --dry-run to create the release
-   Then push with: auto-version release --push
+   ...or with --push to create and publish it
 ```
 
 ### 3. Create Release
