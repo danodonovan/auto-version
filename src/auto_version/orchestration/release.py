@@ -328,20 +328,6 @@ class ReleaseOrchestrator:
                         non_fast_forward=True,
                     ) from exc
 
-                if self.repo.is_dirty():
-                    # release() commits what it creates, so anything left here
-                    # came from the configured build command writing outside
-                    # its declared assets, and the pre-flight check ran before
-                    # that command existed to produce it.
-                    raise ValueError(
-                        "the build command left files in the worktree that are "
-                        "not part of the release, and retrying would discard "
-                        "them. Publishing stopped without resetting the "
-                        "branch. Add them to the release's assets, ignore "
-                        "them, or have the build command clean up after "
-                        "itself."
-                    )
-
                 self.repo.reset_hard(fetched)
                 # This attempt's starting point, and the only state we promise
                 # to restore, is now the tip we just landed on. Leaving it at
