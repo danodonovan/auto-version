@@ -269,6 +269,12 @@ class ReleaseOrchestrator:
                     # Correct release, external failure: leave it to be pushed
                     # by hand. The caller reports the tag and the command.
                     raise
+                if attempt >= retries:
+                    # No retry remains: roll back locally and fail immediately
+                    # instead of preparing state for another attempt.
+                    self.repo.delete_tag(result.tag)
+                    rollback_to_base_if_safe()
+                    raise
                 # Drop the tag before resetting so it cannot survive pointing
                 # at a commit that is about to stop existing. If the deletion
                 # genuinely fails this raises, and the reset below is skipped

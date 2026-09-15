@@ -237,7 +237,9 @@ def test_retries_disabled_by_zero(repo, package):
     with pytest.raises(PushRejected):
         _publish(repo, package, retries=0)
 
-    assert len([op for op in repo.get_operations() if op.startswith("push:")]) == 1
+    ops = repo.get_operations()
+    assert len([op for op in ops if op.startswith("push:")]) == 1
+    assert not [op for op in ops if op.startswith("fetch:")]
 
 
 def test_does_not_retry_unrelated_failures(repo, package):
