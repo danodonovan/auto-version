@@ -274,6 +274,15 @@ class ReleaseOrchestrator:
                 if attempt >= retries:
                     # No retry remains: roll back locally and fail immediately
                     # instead of preparing state for another attempt.
+                    if self.repo.is_dirty():
+                        raise ValueError(
+                            "the build command left files in the worktree that are "
+                            "not part of the release, and retrying or rollback "
+                            "would discard them. Publishing stopped without "
+                            "resetting the branch. Add them to the release's "
+                            "assets, ignore them, or have the build command clean "
+                            "up after itself."
+                        )
                     self.repo.delete_tag(result.tag)
                     rollback_to_base()
                     raise
