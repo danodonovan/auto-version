@@ -89,7 +89,8 @@ To github.com:healx/healnet.git
 def test_classification_is_case_insensitive():
     assert (
         _is_non_fast_forward(
-            "REMOTE: ERROR: CANNOT LOCK REF 'X': IS AT a BUT EXPECTED b"
+            "REMOTE: ERROR: CANNOT LOCK REF 'X': IS AT EDA8436EC6797C6E "
+            "BUT EXPECTED 5959469FC1FD5E95"
         )
         is True
     )
@@ -134,15 +135,23 @@ def test_stale_lock_is_not_retryable():
     assert _is_non_fast_forward(STALE_LOCK) is False
 
 
-def test_cas_failure_needs_both_halves():
-    """Contention is the pairing of the lock failure with the expected-oid detail."""
+def test_cas_failure_needs_the_whole_form_on_one_line():
+    """Contention is the complete compare-and-swap form, on a single line.
+
+    Testing the phrases independently across the whole output would let a
+    server emit them in unrelated `remote:` lines and be read as contention,
+    which enters the destructive retry-and-discard path.
+    """
+    oids = "is at eda8436ec6797c6e but expected 5959469fc1fd5e95"
     assert _is_non_fast_forward("cannot lock ref 'refs/heads/main'") is False
-    assert _is_non_fast_forward("is at abc but expected def") is False
+    assert _is_non_fast_forward(oids) is False
+    # both phrases present, but on separate lines: not a CAS rejection
+    assert _is_non_fast_forward(f"remote: cannot lock ref 'x'\nremote: {oids}") is False
+    assert _is_non_fast_forward(f"cannot lock ref 'refs/heads/main': {oids}") is True
+    # a plausible-looking pair without object ids is not the CAS form either
     assert (
-        _is_non_fast_forward(
-            "cannot lock ref 'refs/heads/main': is at abc but expected def"
-        )
-        is True
+        _is_non_fast_forward("cannot lock ref 'x': is at HEAD but expected main")
+        is False
     )
 
 

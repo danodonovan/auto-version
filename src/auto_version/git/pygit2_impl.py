@@ -1,5 +1,6 @@
 """Real git repository implementation using pygit2."""
 
+import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -7,7 +8,7 @@ from pathlib import Path
 import pygit2
 
 from auto_version.git.interface import (GitRepository, PushRejected,
-                                        redact_remote)
+                                        redact_remote, scrub_credentials)
 from auto_version.models import CommitInfo
 
 # Markers git uses when the remote ref moved under us — the one rejection a
@@ -34,7 +35,13 @@ _NON_FAST_FORWARD_MARKERS = (
 # — which is not contention: retrying cannot clear it, and treating it as
 # retryable would discard a perfectly good release on exhaustion instead of
 # keeping it for a manual push.
-_CAS_FAILURE_MARKERS = ("cannot lock ref", "but expected")
+# Matched on a single line, with the object-id structure required. Testing
+# the two phrases independently across the whole output would let a server
+# emit them in unrelated `remote:` lines and be read as contention.
+_CAS_FAILURE = re.compile(
+    r"cannot lock ref.*\bis at\s+[0-9a-f]{7,40}\s+but expected\s+[0-9a-f]{7,40}",
+    re.IGNORECASE,
+)
 
 
 def _is_non_fast_forward(git_output: str) -> bool:
@@ -55,8 +62,7 @@ def _is_non_fast_forward(git_output: str) -> bool:
             marker in status for marker in _NON_FAST_FORWARD_MARKERS
         ):
             return True
-    lowered = git_output.lower()
-    return all(marker in lowered for marker in _CAS_FAILURE_MARKERS)
+    return any(_CAS_FAILURE.search(line) for line in git_output.splitlines())
 
 
 def _is_missing_tag(git_output: str) -> bool:
@@ -329,7 +335,8 @@ class PyGit2Repository(GitRepository):
             raise PushRejected(
                 f"git push --atomic {redact_remote(remote)} "
                 f"{' '.join(refspecs)} failed "
-                f"(exit {completed.returncode}):\n{completed.stderr.strip()}",
+                f"(exit {completed.returncode}):\n"
+                f"{scrub_credentials(completed.stderr.strip())}",
                 non_fast_forward=_is_non_fast_forward(
                     f"{completed.stdout}\n{completed.stderr}"
                 ),
@@ -415,7 +422,7 @@ class PyGit2Repository(GitRepository):
                 check=check,
             )
         except subprocess.CalledProcessError as exc:
-            exc.cmd = [redact_remote(str(arg)) for arg in exc.cmd]
+            exc.cmd = [scrub_credentials(str(arg)) for arg in exc.cmd]
             raise
 
     def _matches_pattern(self, tag_name: str, pattern: str) -> bool:
