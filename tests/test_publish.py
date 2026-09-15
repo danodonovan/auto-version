@@ -487,3 +487,37 @@ def test_rolls_back_when_the_build_command_leaves_files_behind(repo, package):
     assert "reset_hard: fix1" in ops  # rolled back to where we began
     assert "reset_hard: FETCH_HEAD" not in ops  # never reset onto the new tip
     assert repo.resolve("HEAD") == "fix1"
+
+
+def test_git_failures_do_not_leak_remote_credentials(monkeypatch):
+    """A failing git command must not repeat a credential URL to the caller.
+
+    CalledProcessError quotes the whole argument list, and that exception
+    reaches the CLI's generic handler, bypassing the redaction applied to
+    PushRejected. Redacting centrally in _run_git covers every git call.
+
+    No real repository is created (see CLAUDE.md): subprocess is stubbed, so
+    this exercises the wiring rather than git itself.
+    """
+    import subprocess
+
+    from auto_version.git.pygit2_impl import PyGit2Repository
+
+    repo = PyGit2Repository.__new__(PyGit2Repository)
+    monkeypatch.setattr(repo, "get_repo_root", lambda: Path("/nowhere"))
+
+    secret_url = "https://ghp_SECRET@nonexistent.invalid/x.git"
+
+    def explode(*args, **kwargs):
+        raise subprocess.CalledProcessError(
+            128, ["git", "fetch", "--tags", secret_url, "main"]
+        )
+
+    monkeypatch.setattr(subprocess, "run", explode)
+
+    with pytest.raises(subprocess.CalledProcessError) as excinfo:
+        repo._run_git("fetch", "--tags", secret_url, "main")
+
+    message = str(excinfo.value)
+    assert "ghp_SECRET" not in message
+    assert "***@nonexistent.invalid" in message

@@ -170,3 +170,32 @@ def test_leaves_ordinary_remotes_alone():
     assert redact_remote("https://github.com/healx/healnet.git") == (
         "https://github.com/healx/healnet.git"
     )
+
+
+# --- real captured output: a hook whose advice happens to contain a marker ---
+
+HOOK_ADVISING_FETCH = """\
+remote: error: policy: your branch is behind, please fetch first and rebase
+ ! [remote rejected] HEAD -> main (pre-receive hook declined)
+error: failed to push some refs to '/tmp/t6/origin.git'
+"""
+
+
+def test_hook_advice_containing_a_marker_is_not_retryable():
+    """A server can print anything; only git's own status line counts.
+
+    Captured from a pre-receive hook that prints "please fetch first". Read
+    across the whole output, that phrase looks like contention — and treating
+    it as such would delete the tag, reset, and discard a valid release the
+    server had simply refused.
+    """
+    assert _is_non_fast_forward(HOOK_ADVISING_FETCH) is False
+
+
+def test_markers_are_read_from_the_rejected_status_line_only():
+    """ "! [rejected]" is git rejecting; "! [remote rejected]" is the server."""
+    assert _is_non_fast_forward(" ! [rejected]  HEAD -> main (fetch first)") is True
+    assert (
+        _is_non_fast_forward(" ! [remote rejected]  HEAD -> main (fetch first)")
+        is False
+    )

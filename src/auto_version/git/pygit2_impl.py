@@ -38,10 +38,24 @@ _CAS_FAILURE_MARKERS = ("cannot lock ref", "but expected")
 
 
 def _is_non_fast_forward(git_output: str) -> bool:
-    """Whether git's push output indicates the remote ref moved under us."""
+    """Whether git's push output indicates the remote ref moved under us.
+
+    The plain markers are matched only on git's own ``! [rejected]`` status
+    line, never across the whole output. A server can print anything it likes
+    through ``remote:`` lines, and a hook that advises "please fetch first"
+    would otherwise be read as contention — deleting the tag, resetting, and
+    discarding a valid release that the server had simply refused.
+
+    ``! [remote rejected]`` is a different line and deliberately does not
+    match: that is the server saying no, not the branch moving.
+    """
+    for line in git_output.splitlines():
+        status = line.strip().lower()
+        if status.startswith("! [rejected]") and any(
+            marker in status for marker in _NON_FAST_FORWARD_MARKERS
+        ):
+            return True
     lowered = git_output.lower()
-    if any(marker in lowered for marker in _NON_FAST_FORWARD_MARKERS):
-        return True
     return all(marker in lowered for marker in _CAS_FAILURE_MARKERS)
 
 
@@ -384,14 +398,25 @@ class PyGit2Repository(GitRepository):
     def _run_git(
         self, *args: str, check: bool = True
     ) -> "subprocess.CompletedProcess[str]":
-        """Run a git command in the repository working directory."""
-        return subprocess.run(
-            ["git", *args],
-            cwd=str(self.get_repo_root()),
-            capture_output=True,
-            text=True,
-            check=check,
-        )
+        """Run a git command in the repository working directory.
+
+        A failure raises ``CalledProcessError``, whose message repeats the
+        whole argument list — including a remote given as a credential-bearing
+        URL. That exception propagates to the CLI's generic handler and gets
+        printed, so the arguments are redacted here rather than at each call
+        site: this is the one place every git invocation passes through.
+        """
+        try:
+            return subprocess.run(
+                ["git", *args],
+                cwd=str(self.get_repo_root()),
+                capture_output=True,
+                text=True,
+                check=check,
+            )
+        except subprocess.CalledProcessError as exc:
+            exc.cmd = [redact_remote(str(arg)) for arg in exc.cmd]
+            raise
 
     def _matches_pattern(self, tag_name: str, pattern: str) -> bool:
         """Check if a tag matches a glob pattern."""
