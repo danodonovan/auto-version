@@ -1,6 +1,7 @@
 """Main release orchestration logic."""
 
 import random
+import subprocess
 import time
 from pathlib import Path
 from typing import Callable
@@ -231,8 +232,8 @@ class ReleaseOrchestrator:
         # this method created.
         try:
             base_sha = self.repo.resolve("HEAD")
-        except Exception:
-            if self.repo.get_commits_since(None):
+        except Exception as exc:
+            if not self._is_unborn_head_error(exc):
                 raise
             # Unborn repository: no commits, so there is nothing to release
             # and nothing to roll back to. Let release() report that the
@@ -351,6 +352,26 @@ class ReleaseOrchestrator:
     def _backoff(attempt: int) -> float:
         """Jittered backoff so racing jobs do not retry in lockstep."""
         return random.uniform(0.0, min(2.0**attempt, 8.0))
+
+    @staticmethod
+    def _is_unborn_head_error(exc: Exception) -> bool:
+        """Whether ``exc`` is git's "HEAD has no commit yet" failure."""
+        if not isinstance(exc, subprocess.CalledProcessError):
+            return False
+        raw_cmd = exc.cmd if isinstance(exc.cmd, (list, tuple)) else [str(exc.cmd)]
+        cmd = [str(part).lower() for part in raw_cmd]
+        if "rev-parse" not in cmd or "head" not in cmd:
+            return False
+        output = "\n".join(
+            part
+            for part in (exc.stderr, exc.output)
+            if isinstance(part, str) and part.strip()
+        ).lower()
+        return (
+            "needed a single revision" in output
+            or "unknown revision or path not in the working tree" in output
+            or "ambiguous argument 'head'" in output
+        )
 
     def get_latest_version(self) -> Version | None:
         """Return the latest released version (PEP 440 ordered), or None if untagged.

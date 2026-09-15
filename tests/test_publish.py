@@ -323,6 +323,46 @@ def test_rejects_negative_retries(repo, package):
         _publish(repo, package, retries=-1)
 
 
+def test_only_unborn_head_errors_fall_back_to_plain_release(package):
+    """Only the specific unborn-HEAD git error should enter the fallback."""
+    import subprocess
+
+    repo = MockGitRepository(repo_root=package)
+
+    def unborn_head(ref: str) -> str:
+        if ref == "HEAD":
+            raise subprocess.CalledProcessError(
+                128,
+                ["git", "rev-parse", "HEAD"],
+                stderr=(
+                    "fatal: ambiguous argument 'HEAD': "
+                    "unknown revision or path not in the working tree."
+                ),
+            )
+        return ref
+
+    repo.resolve = unborn_head  # type: ignore[method-assign]
+
+    result = _publish(repo, package)
+
+    assert result.bump_type == VersionBump.NONE
+
+
+def test_non_unborn_head_resolution_failures_propagate(package):
+    """Unexpected HEAD resolution failures must not be treated as unborn."""
+    repo = MockGitRepository(repo_root=package)
+
+    def unexpected_failure(ref: str) -> str:
+        if ref == "HEAD":
+            raise RuntimeError("resolve failed unexpectedly")
+        return ref
+
+    repo.resolve = unexpected_failure  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="resolve failed unexpectedly"):
+        _publish(repo, package)
+
+
 # --- what is left on disk after a failure ---
 
 
