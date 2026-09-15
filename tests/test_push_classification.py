@@ -219,3 +219,20 @@ def test_markers_are_read_from_the_rejected_status_line_only():
         _is_non_fast_forward(" ! [remote rejected]  HEAD -> main (fetch first)")
         is False
     )
+
+
+# --- the reason, not the refspec, decides ---
+
+
+def test_a_ref_named_like_a_marker_is_not_contention():
+    """The refspec shares the status line with the reason and is user text."""
+    line = " ! [rejected]        non-fast-forward -> non-fast-forward (already exists)"
+    assert _is_non_fast_forward(line) is False
+
+
+def test_the_parenthesised_reason_still_matches():
+    assert _is_non_fast_forward(" ! [rejected]  HEAD -> main (fetch first)") is True
+    assert (
+        _is_non_fast_forward(" ! [rejected]  HEAD -> main (non-fast-forward)") is True
+    )
+    assert _is_non_fast_forward(" ! [rejected]  main -> main (stale info)") is True

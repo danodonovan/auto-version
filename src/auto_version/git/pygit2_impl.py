@@ -39,6 +39,9 @@ _NON_FAST_FORWARD_MARKERS = (
 # Matched on a single line, with the object-id structure required. Testing
 # the two phrases independently across the whole output would let a server
 # emit them in unrelated `remote:` lines and be read as contention.
+# The rejection reason git appends to a status line: "... (fetch first)".
+_REJECTION_REASON = re.compile(r"\(([^()]*)\)\s*$")
+
 _CAS_FAILURE = re.compile(
     r"cannot lock ref.*\bis at\s+[0-9a-f]{7,64}\s+but expected\s+[0-9a-f]{7,64}",
     re.IGNORECASE,
@@ -59,8 +62,15 @@ def _is_non_fast_forward(git_output: str) -> bool:
     """
     for line in git_output.splitlines():
         status = line.strip().lower()
-        if status.startswith("! [rejected]") and any(
-            marker in status for marker in _NON_FAST_FORWARD_MARKERS
+        if not status.startswith("! [rejected]"):
+            continue
+        # Only the parenthesised reason at the end of the line counts. The
+        # refspec is user-controlled text sitting on the same line, and a
+        # tag that happened to be named "non-fast-forward" would otherwise
+        # turn an "(already exists)" refusal into contention.
+        reason = _REJECTION_REASON.search(status)
+        if reason and any(
+            marker in reason.group(1) for marker in _NON_FAST_FORWARD_MARKERS
         ):
             return True
     return any(_CAS_FAILURE.search(line) for line in git_output.splitlines())
@@ -385,7 +395,19 @@ class PyGit2Repository(GitRepository):
         completed = self._run_git(
             "merge-base", "--is-ancestor", ancestor, descendant, check=False
         )
-        return completed.returncode == 0
+        # 0 = yes, 1 = no, anything else = git could not answer (bad ref,
+        # damaged repository). Conflating the last with "no" would send the
+        # caller down the divergence path — reset and "please rebase" — for
+        # what is actually an operational failure. Surface it instead.
+        if completed.returncode == 0:
+            return True
+        if completed.returncode == 1:
+            return False
+        raise RuntimeError(
+            f"git merge-base --is-ancestor {ancestor} {descendant} failed "
+            f"(exit {completed.returncode}): "
+            f"{scrub_credentials(completed.stderr.strip())}"
+        )
 
     def is_dirty(self) -> bool:
         """Whether the worktree has any local state, tracked or untracked.

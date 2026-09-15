@@ -273,16 +273,29 @@ class ReleaseOrchestrator:
                     # any file with local changes: the only files differing
                     # between the release commit and base_sha are the release's
                     # own assets, so the leak is left exactly where it is.
-                    # Reset first, then drop the tag — if the reset aborts
-                    # (the build command edited one of the assets too) nothing
-                    # has changed and the error is git's own.
+                    # Drop the tag, then reset — and if the reset fails, put
+                    # the tag back. Either operation can fail, and neither
+                    # order is safe on its own: reset-then-delete leaves an
+                    # orphan tag if the deletion fails, which silences the
+                    # next run ("no release needed"); delete-then-reset leaves
+                    # an untagged release commit if the reset aborts, which
+                    # the next run releases on top of. Recreating the tag on
+                    # the release commit restores exactly today's state.
                     #
                     # Not "push it by hand": we are here because the branch
                     # moved, so the local release is non-fast-forward and its
                     # version may already be stale. The only correct recovery
                     # from contention is discard-and-rerun, which this does.
-                    self.repo.reset_keep(base_sha)
                     self.repo.delete_tag(result.tag)
+                    try:
+                        self.repo.reset_keep(base_sha)
+                    except Exception:
+                        self.repo.create_tag(
+                            result.tag,
+                            f"Release {result.new_version}",
+                            result.commit_sha,
+                        )
+                        raise
                     raise ValueError(
                         "the build command left changes in the worktree that "
                         "are not part of the release (see `git status`). The "

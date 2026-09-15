@@ -26,6 +26,7 @@ class MockGitRepository(GitRepository):
         self._dirty = False
         self._tag_delete_failures: set[str] = set()
         self._fetch_fails = False
+        self._reset_fails = False
 
     def add_commit(self, commit: CommitInfo) -> None:
         """Add a commit to the mock repository."""
@@ -199,6 +200,10 @@ class MockGitRepository(GitRepository):
         self._staged_files.extend(files)
         self._operations.append(f"stage_files: {[str(f) for f in files]}")
 
+    def fail_next_reset(self) -> None:
+        """Make the next ``reset_keep`` raise, as an aborted ``--keep`` would."""
+        self._reset_fails = True
+
     def fail_next_fetch(self) -> None:
         """Make the next ``fetch`` raise, modelling a transient remote failure."""
         self._fetch_fails = True
@@ -246,6 +251,9 @@ class MockGitRepository(GitRepository):
         having restored anything.
         """
         self._operations.append(f"reset_keep: {ref}")
+        if self._reset_fails:
+            self._reset_fails = False
+            raise RuntimeError("mock: reset --keep aborted")
         target = self.resolve(ref)
         # A hard reset discards locally created commits wherever it lands —
         # after `reset --hard FETCH_HEAD` the release commit is unreachable,

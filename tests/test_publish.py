@@ -598,3 +598,82 @@ def test_git_failures_do_not_leak_remote_credentials(monkeypatch):
     assert "***@nonexistent.invalid" in message
     assert "ghp_SECRET" not in (excinfo.value.output or "")
     assert "ghp_SECRET" not in (excinfo.value.stderr or "")
+
+
+def _dirty_after_release(repo, package):
+    """An orchestrator whose release() leaves the worktree dirty afterwards."""
+    orchestrator = ReleaseOrchestrator(repo, _config(package))
+    original_release = orchestrator.release
+
+    def release_then_dirty(*args, **kwargs):
+        result = original_release(*args, **kwargs)
+        repo.set_dirty(True)
+        return result
+
+    orchestrator.release = release_then_dirty  # type: ignore[method-assign]
+    return orchestrator
+
+
+def test_dirty_rollback_restores_the_tag_if_the_reset_fails(repo, package):
+    """A failed reset must not leave an untagged release commit behind.
+
+    The tag is deleted before the reset. If the reset then aborts, the tag is
+    recreated on the release commit so the checkout is exactly as it was —
+    otherwise the next run would find the release commit untagged, treat it as
+    unreleased work, and release again on top of it.
+    """
+    repo.queue_push_failures(1)
+    repo.fail_next_reset()
+
+    with pytest.raises(RuntimeError, match="reset --keep aborted"):
+        _dirty_after_release(repo, package).release_and_publish(sleep=lambda _: None)
+
+    ops = repo.get_operations()
+    reset_at = ops.index("reset_keep: fix1")
+    assert ops.index("delete_tag: kg-1.0.1") < reset_at
+    assert any(op.startswith("create_tag: kg-1.0.1 at ") for op in ops[reset_at:])
+    assert "kg-1.0.1" in repo.get_tags()  # restored
+
+
+def test_dirty_rollback_leaves_everything_if_tag_deletion_fails(repo, package):
+    """Delete-first means a failed deletion moves nothing.
+
+    Reset-then-delete would leave HEAD at the base with the tag still pointing
+    at the discarded commit — an orphan tag that silences the next run.
+    """
+    repo.queue_push_failures(1)
+    repo.fail_tag_delete("kg-1.0.1")
+
+    with pytest.raises(RuntimeError, match="cannot delete tag"):
+        _dirty_after_release(repo, package).release_and_publish(sleep=lambda _: None)
+
+    assert not [op for op in repo.get_operations() if op.startswith("reset_keep:")]
+    assert "kg-1.0.1" in repo.get_tags()
+
+
+def test_is_ancestor_surfaces_git_failures_rather_than_answering_no(monkeypatch):
+    """Exit 1 is "no"; any other non-zero is an error and must propagate.
+
+    Treating a fatal (bad ref, damaged repository) as "not an ancestor" would
+    reset the release and tell the user to rebase for what is actually a git
+    failure. Verified exit codes: 0 yes, 1 no, 128 fatal.
+    """
+    import subprocess
+
+    from auto_version.git.pygit2_impl import PyGit2Repository
+
+    repo = PyGit2Repository.__new__(PyGit2Repository)
+    monkeypatch.setattr(repo, "get_repo_root", lambda: Path("/nowhere"))
+
+    def fake_run(argv, **kwargs):
+        code = {"yes": 0, "no": 1, "boom": 128}[argv[-1]]
+        return subprocess.CompletedProcess(
+            argv, code, stdout="", stderr="fatal: bad object"
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert repo.is_ancestor("a", "yes") is True
+    assert repo.is_ancestor("a", "no") is False
+    with pytest.raises(RuntimeError, match="exit 128"):
+        repo.is_ancestor("a", "boom")
