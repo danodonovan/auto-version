@@ -204,10 +204,11 @@ class GitRepository(ABC):
 
     @abstractmethod
     def is_dirty(self) -> bool:
-        """Whether tracked files have staged or unstaged modifications.
+        """Whether the worktree holds local state that a reset would destroy.
 
-        Untracked files do not count: ``git reset --hard`` leaves them alone,
-        so treating them as dirty would reject a checkout that is in fact
-        safe to reset.
+        Untracked files count. ``git reset --hard`` preserves an untracked
+        file only while its path is absent from the tree being reset onto; if
+        that tree tracks the path, the file is overwritten without warning.
+        Ignored files do not count.
         """
         pass

@@ -86,7 +86,12 @@ To github.com:healx/healnet.git
 
 
 def test_classification_is_case_insensitive():
-    assert _is_non_fast_forward("REMOTE: ERROR: CANNOT LOCK REF 'X'") is True
+    assert (
+        _is_non_fast_forward(
+            "REMOTE: ERROR: CANNOT LOCK REF 'X': IS AT a BUT EXPECTED b"
+        )
+        is True
+    )
 
 
 # --- real captured output: `git tag -d` on a tag that is not there ---
@@ -105,3 +110,36 @@ def test_other_tag_deletion_failures_propagate():
     """
     output = "error: cannot lock ref 'refs/tags/kg-1.0.1': Unable to create lock file\n"
     assert _is_missing_tag(output) is False
+
+
+# --- real captured output: a lock that is held or stale (NOT contention) ---
+
+STALE_LOCK = """\
+remote: error: cannot lock ref 'refs/heads/main': Unable to create '/tmp/t2/origin.git/./refs/heads/main.lock': File exists.
+ ! [remote rejected] HEAD -> main (atomic transaction failed)
+error: failed to push some refs to '/tmp/t2/origin.git'
+"""
+
+
+def test_stale_lock_is_not_retryable():
+    """ "cannot lock ref" alone is not contention.
+
+    A held or stale lock file produces the same opening phrase as a failed
+    compare-and-swap but without the "is at X but expected Y" detail.
+    Retrying cannot clear it, and classifying it as contention would discard
+    a perfectly good release on exhaustion rather than keeping it to push by
+    hand.
+    """
+    assert _is_non_fast_forward(STALE_LOCK) is False
+
+
+def test_cas_failure_needs_both_halves():
+    """Contention is the pairing of the lock failure with the expected-oid detail."""
+    assert _is_non_fast_forward("cannot lock ref 'refs/heads/main'") is False
+    assert _is_non_fast_forward("is at abc but expected def") is False
+    assert (
+        _is_non_fast_forward(
+            "cannot lock ref 'refs/heads/main': is at abc but expected def"
+        )
+        is True
+    )

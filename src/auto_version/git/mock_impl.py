@@ -156,7 +156,7 @@ class MockGitRepository(GitRepository):
         self._current_branch = branch
 
     def set_dirty(self, dirty: bool) -> None:
-        """Set whether tracked files report modifications."""
+        """Set whether the worktree reports local state."""
         self._dirty = dirty
 
     def set_diverged_from_remote(self, diverged: bool) -> None:
@@ -187,7 +187,7 @@ class MockGitRepository(GitRepository):
         return not self._diverged_from_remote
 
     def is_dirty(self) -> bool:
-        """Whether tracked files have staged or unstaged modifications."""
+        """Whether the worktree holds local state a reset would destroy."""
         return self._dirty
 
     def get_repo_root(self) -> Path:

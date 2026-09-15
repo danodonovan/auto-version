@@ -23,14 +23,25 @@ _NON_FAST_FORWARD_MARKERS = (
     "non-fast-forward",
     "fetch first",
     "stale info",
-    "cannot lock ref",
 )
+
+# An atomic push reports contention as a failed compare-and-swap on the ref:
+#   cannot lock ref 'refs/heads/main': is at <oid> but expected <oid>
+# Both halves are required. "cannot lock ref" alone also covers a stale or
+# held lock file —
+#   cannot lock ref 'refs/heads/main': Unable to create '…main.lock': File exists
+# — which is not contention: retrying cannot clear it, and treating it as
+# retryable would discard a perfectly good release on exhaustion instead of
+# keeping it for a manual push.
+_CAS_FAILURE_MARKERS = ("cannot lock ref", "but expected")
 
 
 def _is_non_fast_forward(git_output: str) -> bool:
     """Whether git's push output indicates the remote ref moved under us."""
     lowered = git_output.lower()
-    return any(marker in lowered for marker in _NON_FAST_FORWARD_MARKERS)
+    if any(marker in lowered for marker in _NON_FAST_FORWARD_MARKERS):
+        return True
+    return all(marker in lowered for marker in _CAS_FAILURE_MARKERS)
 
 
 def _is_missing_tag(git_output: str) -> bool:
@@ -350,8 +361,19 @@ class PyGit2Repository(GitRepository):
         return completed.returncode == 0
 
     def is_dirty(self) -> bool:
-        """Whether tracked files have staged or unstaged modifications."""
-        completed = self._run_git("status", "--porcelain", "--untracked-files=no")
+        """Whether the worktree has any local state, tracked or untracked.
+
+        Untracked files count. An earlier version excluded them, on the
+        reasoning that ``git reset --hard`` leaves untracked files alone —
+        which is only true while the path is *absent* from the tree being
+        reset onto. If a concurrent release adds a tracked file at a path
+        where an untracked one sits, the reset silently overwrites it.
+
+        Ignored files do not count: ``git status --porcelain`` honours
+        ``.gitignore``, so build output and virtualenvs do not block a
+        release.
+        """
+        completed = self._run_git("status", "--porcelain")
         return bool(completed.stdout.strip())
 
     def _run_git(

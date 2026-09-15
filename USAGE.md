@@ -224,8 +224,11 @@ The two failure modes need opposite handling, so they behave differently:
 The distinction matters because any local release tag makes the next run report
 "no release needed". A kept release is therefore always reported as kept.
 
-`--push` refuses to run on a dirty worktree (tracked modifications only —
-untracked files are safe), because retrying resets the checkout. It also
+`--push` refuses to run on a dirty worktree, because retrying resets the
+checkout. Untracked files count: `git reset --hard` spares an untracked file
+only while its path is absent from the tree being reset onto, so a concurrent
+release that adds a file at that path would overwrite it. Ignored files (build
+output, virtualenvs) do not count. It also
 refuses a detached HEAD unless you pass `--branch`, rather than guessing where
 the release should land.
 
