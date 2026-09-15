@@ -7,6 +7,25 @@ from pathlib import Path
 from auto_version.models import CommitInfo
 
 
+def redact_remote(remote: str) -> str:
+    """Hide any credentials embedded in a remote before displaying it.
+
+    A remote may be a URL rather than a name, and a URL may carry userinfo
+    (``https://token@host/repo.git``). Those strings end up in error messages
+    and in the commands this tool suggests, both of which reach CI logs, so
+    the credential is stripped for display while callers keep the original
+    for git itself.
+    """
+    scheme, _, rest = remote.partition("://")
+    if not rest:
+        return remote  # a remote name, or scp-style git@host:path
+    netloc, slash, path = rest.partition("/")
+    if "@" not in netloc:
+        return remote
+    _, _, host = netloc.rpartition("@")
+    return f"{scheme}://***@{host}{slash}{path}"
+
+
 class PushRejected(Exception):
     """A push to the remote was rejected.
 

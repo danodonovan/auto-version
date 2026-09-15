@@ -6,7 +6,8 @@ from pathlib import Path
 import click
 
 from auto_version.config import Config
-from auto_version.git.interface import BranchDiverged, PushRejected
+from auto_version.git.interface import (BranchDiverged, PushRejected,
+                                        redact_remote)
 from auto_version.git.pygit2_impl import PyGit2Repository
 from auto_version.models import VersionBump
 from auto_version.orchestration.release import ReleaseOrchestrator
@@ -98,6 +99,10 @@ def release(
             err=True,
         )
         sys.exit(3)
+
+    # Shown wherever the remote appears in output: a URL remote may carry
+    # a token, and these lines reach CI logs.
+    shown_remote = redact_remote(remote)
 
     try:
         # Find config file
@@ -242,7 +247,7 @@ def release(
             click.echo("\n💡 Run without --dry-run to create the release")
             click.echo("   ...or with --push to create and publish it")
         elif push:
-            click.echo(f"\n✅ Pushed to {remote} ({result.tag})")
+            click.echo(f"\n✅ Pushed to {shown_remote} ({result.tag})")
         else:
             # Name the branch rather than shelling out to
             # `git branch --show-current`, which is empty on a detached HEAD
@@ -251,7 +256,7 @@ def release(
             click.echo("\n💡 Push the release:")
             if target is None:
                 click.echo(
-                    f"   git push --atomic {remote} "
+                    f"   git push --atomic {shown_remote} "
                     f"HEAD:refs/heads/<branch> refs/tags/{result.tag}"
                 )
                 click.echo(
@@ -260,7 +265,7 @@ def release(
                 )
             else:
                 click.echo(
-                    f"   git push --atomic {remote} "
+                    f"   git push --atomic {shown_remote} "
                     f"HEAD:refs/heads/{target} refs/tags/{result.tag}"
                 )
             click.echo("   (or re-run with --push to do it for you)")
@@ -274,7 +279,7 @@ def release(
         click.echo(f"Error: {e}", err=True)
         if e.non_fast_forward:
             click.echo(
-                f"\nEvery attempt was rejected: {remote} is moving faster "
+                f"\nEvery attempt was rejected: {shown_remote} is moving faster "
                 "than the retries. Nothing was published, and the local "
                 "release was discarded — re-run to recompute it.",
                 err=True,

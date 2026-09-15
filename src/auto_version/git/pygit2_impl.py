@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pygit2
 
-from auto_version.git.interface import GitRepository, PushRejected
+from auto_version.git.interface import (GitRepository, PushRejected,
+                                        redact_remote)
 from auto_version.models import CommitInfo
 
 # Markers git uses when the remote ref moved under us — the one rejection a
@@ -312,7 +313,8 @@ class PyGit2Repository(GitRepository):
         completed = self._run_git("push", "--atomic", remote, *refspecs, check=False)
         if completed.returncode != 0:
             raise PushRejected(
-                f"git push --atomic {remote} {' '.join(refspecs)} failed "
+                f"git push --atomic {redact_remote(remote)} "
+                f"{' '.join(refspecs)} failed "
                 f"(exit {completed.returncode}):\n{completed.stderr.strip()}",
                 non_fast_forward=_is_non_fast_forward(
                     f"{completed.stdout}\n{completed.stderr}"
@@ -373,7 +375,10 @@ class PyGit2Repository(GitRepository):
         ``.gitignore``, so build output and virtualenvs do not block a
         release.
         """
-        completed = self._run_git("status", "--porcelain")
+        # --untracked-files=normal is passed explicitly: status honours the
+        # user's status.showUntrackedFiles setting, so without it a config of
+        # "no" would silently report a worktree clean and disable this guard.
+        completed = self._run_git("status", "--porcelain", "--untracked-files=normal")
         return bool(completed.stdout.strip())
 
     def _run_git(

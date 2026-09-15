@@ -12,6 +12,7 @@ failed)", never the "non-fast-forward" / "fetch first" phrasing a plain push
 uses.
 """
 
+from auto_version.git.interface import redact_remote
 from auto_version.git.pygit2_impl import _is_missing_tag, _is_non_fast_forward
 
 # --- real captured output: the remote moved under us (retryable) ---
@@ -142,4 +143,30 @@ def test_cas_failure_needs_both_halves():
             "cannot lock ref 'refs/heads/main': is at abc but expected def"
         )
         is True
+    )
+
+
+# --- credentials must not reach logs ---
+
+
+def test_redacts_credentials_in_url_remotes():
+    """A URL remote can carry a token, and these strings reach CI logs."""
+    assert (
+        redact_remote("https://ghp_secret123@github.com/healx/healnet.git")
+        == "https://***@github.com/healx/healnet.git"
+    )
+    assert (
+        redact_remote("https://user:pa55w0rd@example.com/repo.git")
+        == "https://***@example.com/repo.git"
+    )
+
+
+def test_leaves_ordinary_remotes_alone():
+    """Names and scp-style remotes carry no secret and must stay readable."""
+    assert redact_remote("origin") == "origin"
+    assert redact_remote("git@github.com:healx/healnet.git") == (
+        "git@github.com:healx/healnet.git"
+    )
+    assert redact_remote("https://github.com/healx/healnet.git") == (
+        "https://github.com/healx/healnet.git"
     )
