@@ -268,7 +268,10 @@ def release(
                     f"   git push --atomic {shown_remote} "
                     f"HEAD:refs/heads/{target} refs/tags/{result.tag}"
                 )
-            click.echo("   (or re-run with --push to do it for you)")
+            click.echo(
+                "   (--push creates and publishes in one step; it cannot\n"
+                "    publish a release that already exists locally)"
+            )
 
     except BranchDiverged as e:
         # Message is complete on its own: re-running will not help until

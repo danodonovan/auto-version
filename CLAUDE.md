@@ -95,7 +95,7 @@ For publication (`release_and_publish`), the mock also simulates contention and
 the states `--push` must refuse:
 - `queue_push_failures(count, non_fast_forward=True)` — make the next `count` pushes raise `PushRejected`
 - `add_release_arriving_on_fetch(commit, tag=None)` — reveal the winning job's release (its commit, and optionally its tag) on the next `fetch()`
-- `set_dirty(True)` — report tracked modifications
+- `set_dirty(True)` — report local worktree state (tracked *or* untracked; `--push` refuses both)
 - `set_current_branch(None)` — model a detached HEAD
 - `fail_tag_delete(name)` — make `delete_tag` raise, as a ref lock would
 - `set_diverged_from_remote(True)` — model a branch carrying commits the remote lacks
