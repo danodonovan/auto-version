@@ -178,11 +178,14 @@ class ReleaseOrchestrator:
         run report "no release needed" — the version is derived from tags — so
         leaving one behind is only safe when the caller is told it is there.
 
-        A retry only ever resets onto a tip that already contains the commit
-        publishing started from, so it cannot discard anything this method did
-        not create. If the branch carries commits the remote does not have —
-        or the remote was rewritten — the release is rolled back to where it
-        started and the caller is asked to rebase, rather than having its
+        Every reset is ``git reset --keep``: it refuses to overwrite a file
+        with local changes, so no path through this method can destroy an
+        edit it did not make. A retry only ever resets onto a tip that
+        already contains the commit publishing started from, so it cannot
+        discard a commit this method did not create either. If the branch
+        carries commits the remote does not have — or the remote was
+        rewritten — the release is rolled back to where it started and the
+        caller is asked to rebase, rather than having its
         commits reset away.
 
         Args:
@@ -243,7 +246,7 @@ class ReleaseOrchestrator:
             return self.release(dry_run=False)
 
         def rollback_to_base() -> None:
-            self.repo.reset_hard(base_sha)
+            self.repo.reset_keep(base_sha)
 
         attempt = 0
         while True:
@@ -263,26 +266,37 @@ class ReleaseOrchestrator:
                     # by hand. The caller reports the tag and the command.
                     raise
                 if self.repo.is_dirty():
+                    # release() commits what it creates, so anything left here
+                    # came from the build command writing outside its declared
+                    # assets. A hard reset would destroy a tracked file it
+                    # edited, but `--keep` moves HEAD while refusing to touch
+                    # any file with local changes: the only files differing
+                    # between the release commit and base_sha are the release's
+                    # own assets, so the leak is left exactly where it is.
+                    # Reset first, then drop the tag — if the reset aborts
+                    # (the build command edited one of the assets too) nothing
+                    # has changed and the error is git's own.
+                    #
+                    # Not "push it by hand": we are here because the branch
+                    # moved, so the local release is non-fast-forward and its
+                    # version may already be stale. The only correct recovery
+                    # from contention is discard-and-rerun, which this does.
+                    self.repo.reset_keep(base_sha)
+                    self.repo.delete_tag(result.tag)
                     raise ValueError(
-                        "the build command left files in the worktree that are "
-                        "not part of the release, and retrying or rollback "
-                        "would discard them. Publishing stopped without "
-                        "resetting the branch. Add them to the release's "
-                        "assets, ignore them, or have the build command clean "
-                        "up after itself."
+                        "the build command left changes in the worktree that "
+                        "are not part of the release (see `git status`). The "
+                        f"release was rolled back to {base_sha[:7]} with those "
+                        "changes intact, and nothing was published. Publishing "
+                        "cannot retry while they are present: add them to the "
+                        "release's assets, ignore them, or have the build "
+                        "command clean up after itself — then re-run."
                     )
                 if attempt >= retries:
                     # No retry remains: roll back locally and fail immediately
-                    # instead of preparing state for another attempt.
-                    if self.repo.is_dirty():
-                        raise ValueError(
-                            "the build command left files in the worktree that are "
-                            "not part of the release, and retrying or rollback "
-                            "would discard them. Publishing stopped without "
-                            "resetting the branch. Add them to the release's "
-                            "assets, ignore them, or have the build command clean "
-                            "up after itself."
-                        )
+                    # instead of preparing state for another attempt. The
+                    # worktree is clean here — the check above already raised
+                    # otherwise — so the rollback cannot discard build output.
                     self.repo.delete_tag(result.tag)
                     rollback_to_base()
                     raise
@@ -329,15 +343,13 @@ class ReleaseOrchestrator:
                         non_fast_forward=True,
                     ) from exc
 
-                self.repo.reset_hard(fetched)
+                self.repo.reset_keep(fetched)
                 # This attempt's starting point, and the only state we promise
                 # to restore, is now the tip we just landed on. Leaving it at
                 # the original HEAD would let a later attempt accept a fetched
                 # tip that dropped what this one accepted — exactly the
                 # rewritten-history case the containment check exists to catch.
                 base_sha = self.repo.resolve("HEAD")
-                if attempt >= retries:
-                    raise
                 attempt += 1
                 sleep(self._backoff(attempt - 1))
                 continue

@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from auto_version.config import Config
-from auto_version.git.interface import GitRepository, PushRejected
+from auto_version.git.interface import PushRejected
 from auto_version.git.mock_impl import MockGitRepository
 from auto_version.models import CommitInfo, VersionBump
 from auto_version.orchestration.release import ReleaseOrchestrator
@@ -193,8 +193,8 @@ def test_discards_stale_tag_before_resetting(repo, package):
     _publish(repo, package)
 
     ops = repo.get_operations()
-    assert ops.index("delete_tag: kg-1.0.1") < ops.index("reset_hard: FETCH_HEAD")
-    assert ops.index("reset_hard: FETCH_HEAD") > ops.index("fetch: origin main")
+    assert ops.index("delete_tag: kg-1.0.1") < ops.index("reset_keep: FETCH_HEAD")
+    assert ops.index("reset_keep: FETCH_HEAD") > ops.index("fetch: origin main")
 
 
 def test_survives_several_consecutive_losses(repo, package):
@@ -379,7 +379,7 @@ def test_discards_the_release_when_every_attempt_is_rejected(repo, package):
 
     ops = repo.get_operations()
     assert "delete_tag: kg-1.0.1" in ops
-    assert "reset_hard: FETCH_HEAD" in ops
+    assert "reset_keep: FETCH_HEAD" in ops
     # the tag is gone, so a re-run recomputes rather than reporting NONE
     assert "kg-1.0.1" not in repo.get_tags()
 
@@ -398,7 +398,7 @@ def test_keeps_the_release_when_the_failure_is_not_contention(repo, package):
     ops = repo.get_operations()
     assert "kg-1.0.1" in repo.get_tags()
     assert not [op for op in ops if op.startswith("delete_tag:")]
-    assert not [op for op in ops if op.startswith("reset_hard:")]
+    assert not [op for op in ops if op.startswith("reset_keep:")]
 
 
 def test_does_not_reset_when_tag_deletion_fails(repo, package):
@@ -413,7 +413,7 @@ def test_does_not_reset_when_tag_deletion_fails(repo, package):
     with pytest.raises(RuntimeError, match="cannot delete tag"):
         _publish(repo, package)
 
-    assert not [op for op in repo.get_operations() if op.startswith("reset_hard:")]
+    assert not [op for op in repo.get_operations() if op.startswith("reset_keep:")]
 
 
 def test_rolls_back_rather_than_resetting_away_local_commits(repo, package):
@@ -433,8 +433,8 @@ def test_rolls_back_rather_than_resetting_away_local_commits(repo, package):
 
     ops = repo.get_operations()
     # rolled back to the pre-release commit, not to the fetched tip
-    assert "reset_hard: fix1" in ops
-    assert "reset_hard: FETCH_HEAD" not in ops
+    assert "reset_keep: fix1" in ops
+    assert "reset_keep: FETCH_HEAD" not in ops
     # and the rollback actually restored it, not merely logged the intent
     assert repo.resolve("HEAD") == "fix1"
     # and the release it created was cleaned up
@@ -476,7 +476,7 @@ def test_rolls_back_if_the_resync_fetch_fails(repo, package):
 
     ops = repo.get_operations()
     assert "delete_tag: kg-1.0.1" in ops
-    assert "reset_hard: fix1" in ops  # back to the pre-release commit
+    assert "reset_keep: fix1" in ops  # back to the pre-release commit
     assert "kg-1.0.1" not in repo.get_tags()
 
 
@@ -501,13 +501,13 @@ def test_advances_the_baseline_after_each_successful_retry(repo, package):
     assert checks[1] == "is_ancestor: winner1 in FETCH_HEAD"
 
 
-def test_rolls_back_when_the_build_command_leaves_files_behind(repo, package):
+def test_rolls_back_with_keep_when_the_build_command_leaves_files_behind(repo, package):
     """A build command can dirty the worktree after the pre-flight check.
 
-    release() commits what it creates, so anything still untracked when the
-    retry begins came from the configured build command writing outside its
-    declared assets — and the reset would destroy it. The pre-flight check
-    cannot catch this: it runs before the command that produces the files.
+    The release is undone with `reset --keep`, which refuses to touch any file
+    with local changes, so the leak survives and the release commit and tag
+    are gone — leaving a re-run free to recompute once the leak is dealt with.
+    Nothing is fetched: the check runs before `delete_tag`/`fetch`.
     """
     repo.queue_push_failures(1)
     repo.add_release_arriving_on_fetch(_release_commit("winner", "dwpc"), "dwpc-1.0.1")
@@ -522,17 +522,25 @@ def test_rolls_back_when_the_build_command_leaves_files_behind(repo, package):
 
     orchestrator.release = release_then_dirty  # type: ignore[method-assign]
 
-    with pytest.raises(ValueError, match="build command left files"):
+    with pytest.raises(ValueError, match="rolled back to fix1"):
         orchestrator.release_and_publish(sleep=lambda _: None)
 
     ops = repo.get_operations()
-    assert "delete_tag: kg-1.0.1" not in ops
-    assert "reset_hard: fix1" not in ops
-    assert "reset_hard: FETCH_HEAD" not in ops
+    assert "reset_keep: fix1" in ops  # undone, to where we began
+    assert "delete_tag: kg-1.0.1" in ops
+    assert "reset_keep: FETCH_HEAD" not in ops  # never reset onto the new tip
+    assert not [op for op in ops if op.startswith("fetch:")]
+    assert repo.resolve("HEAD") == "fix1"
+    assert "kg-1.0.1" not in repo.get_tags()
 
 
-def test_does_not_reset_on_fetch_failure_when_build_leftovers_exist(repo, package):
-    """Fetch rollback refuses to discard post-release build leftovers."""
+def test_dirty_check_precedes_the_fetch_so_leftovers_are_never_reset(repo, package):
+    """With leftovers present the fetch is never attempted, let alone rolled back.
+
+    `fail_next_fetch()` is armed but never fires: the post-release dirty check
+    runs before `delete_tag`/`fetch`, so no reset of any kind can reach the
+    leftovers.
+    """
     repo.queue_push_failures(1)
     repo.fail_next_fetch()
 
@@ -546,13 +554,11 @@ def test_does_not_reset_on_fetch_failure_when_build_leftovers_exist(repo, packag
 
     orchestrator.release = release_then_dirty  # type: ignore[method-assign]
 
-    with pytest.raises(ValueError, match="rollback would discard"):
+    with pytest.raises(ValueError, match="build command left changes"):
         orchestrator.release_and_publish(sleep=lambda _: None)
 
-    ops = repo.get_operations()
-    assert "delete_tag: kg-1.0.1" not in ops
-    assert not [op for op in ops if op.startswith("fetch:")]
-    assert not [op for op in ops if op.startswith("reset_hard:")]
+    # the armed fetch failure never fired: the dirty check ran first
+    assert not [op for op in repo.get_operations() if op.startswith("fetch:")]
 
 
 def test_git_failures_do_not_leak_remote_credentials(monkeypatch):
@@ -592,36 +598,3 @@ def test_git_failures_do_not_leak_remote_credentials(monkeypatch):
     assert "***@nonexistent.invalid" in message
     assert "ghp_SECRET" not in (excinfo.value.output or "")
     assert "ghp_SECRET" not in (excinfo.value.stderr or "")
-
-
-def test_legacy_git_repository_subclasses_still_instantiate(package):
-    """Publish-only API additions should not break release-only implementations."""
-
-    class LegacyRepo(GitRepository):
-        def get_tags(self, pattern: str | None = None) -> list[str]:
-            return []
-
-        def get_commits_since(
-            self, since_ref: str | None, path_filters: list[str] | None = None
-        ) -> list[CommitInfo]:
-            return []
-
-        def get_changed_files(self, commit_sha: str) -> list[Path]:
-            return []
-
-        def create_tag(self, name: str, message: str, commit: str = "HEAD") -> None:
-            return None
-
-        def create_commit(self, message: str, files: list[Path]) -> str:
-            return "mock"
-
-        def get_current_branch(self) -> str | None:
-            return "main"
-
-        def get_repo_root(self) -> Path:
-            return package
-
-        def stage_files(self, files: list[Path]) -> None:
-            return None
-
-    LegacyRepo()

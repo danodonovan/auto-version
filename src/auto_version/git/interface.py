@@ -147,6 +147,7 @@ class GitRepository(ABC):
         """
         pass
 
+    @abstractmethod
     def fetch(self, remote: str, branch: str) -> str:
         """Fetch a branch from a remote and return a ref naming its tip.
 
@@ -162,11 +163,9 @@ class GitRepository(ABC):
         Returns:
             A ref that resolves to the fetched tip.
         """
-        raise NotImplementedError(
-            "fetch() is required for release publishing (--push) but is not "
-            "implemented by this GitRepository."
-        )
+        pass
 
+    @abstractmethod
     def push(self, remote: str, refspecs: list[str]) -> None:
         """Push refspecs to a remote as a single all-or-nothing update.
 
@@ -179,22 +178,29 @@ class GitRepository(ABC):
             PushRejected: The remote refused the update. Check
                 ``non_fast_forward`` to decide whether a retry can help.
         """
-        raise NotImplementedError(
-            "push() is required for release publishing (--push) but is not "
-            "implemented by this GitRepository."
-        )
+        pass
 
-    def reset_hard(self, ref: str) -> None:
-        """Discard local commits and working-tree changes, moving to ``ref``.
+    @abstractmethod
+    def reset_keep(self, ref: str) -> None:
+        """Move HEAD to ``ref``, refusing to overwrite local changes.
+
+        ``git reset --keep`` semantics: files that differ between HEAD and
+        ``ref`` are updated; if any of those has local modifications the
+        reset aborts and changes nothing. On a clean worktree this is exactly
+        a hard reset. On a dirty one it is the difference between undoing this
+        tool's own commit and destroying a file the user, or a build command,
+        edited — so it is the only reset this tool performs.
 
         Args:
-            ref: Reference to reset onto (e.g. "origin/main")
-        """
-        raise NotImplementedError(
-            "reset_hard() is required for release publishing (--push) but is "
-            "not implemented by this GitRepository."
-        )
+            ref: Reference to reset onto (e.g. "FETCH_HEAD", a SHA)
 
+        Raises:
+            An implementation-defined error if a modified file would be
+            overwritten. The worktree is unchanged in that case.
+        """
+        pass
+
+    @abstractmethod
     def delete_tag(self, name: str) -> None:
         """Delete a tag from the local repository only.
 
@@ -205,11 +211,9 @@ class GitRepository(ABC):
         Args:
             name: Tag name to delete
         """
-        raise NotImplementedError(
-            "delete_tag() is required for release publishing (--push) but is "
-            "not implemented by this GitRepository."
-        )
+        pass
 
+    @abstractmethod
     def resolve(self, ref: str) -> str:
         """Resolve a ref to its commit SHA.
 
@@ -219,11 +223,9 @@ class GitRepository(ABC):
         Returns:
             The full commit SHA.
         """
-        raise NotImplementedError(
-            "resolve() is required for release publishing (--push) but is not "
-            "implemented by this GitRepository."
-        )
+        pass
 
+    @abstractmethod
     def is_ancestor(self, ancestor: str, descendant: str) -> bool:
         """Whether ``ancestor`` is reachable from ``descendant``.
 
@@ -235,11 +237,9 @@ class GitRepository(ABC):
             ancestor: Commit expected to be contained in ``descendant``
             descendant: Commit to search from
         """
-        raise NotImplementedError(
-            "is_ancestor() is required for release publishing (--push) but is "
-            "not implemented by this GitRepository."
-        )
+        pass
 
+    @abstractmethod
     def is_dirty(self) -> bool:
         """Whether the worktree holds local state that a reset would destroy.
 
@@ -248,7 +248,4 @@ class GitRepository(ABC):
         that tree tracks the path, the file is overwritten without warning.
         Ignored files do not count.
         """
-        raise NotImplementedError(
-            "is_dirty() is required for release publishing (--push) but is not "
-            "implemented by this GitRepository."
-        )
+        pass

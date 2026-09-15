@@ -232,8 +232,12 @@ class MockGitRepository(GitRepository):
                 non_fast_forward=non_fast_forward,
             )
 
-    def reset_hard(self, ref: str) -> None:
+    def reset_keep(self, ref: str) -> None:
         """Move history to ``ref``, discarding anything after it.
+
+        Models ``--keep`` on a clean tree, which is all the orchestrator
+        ever asks of it; the real implementation additionally aborts when
+        a differing file has local changes.
 
         Honours the ref rather than only dropping locally created commits:
         the rollback paths reset to a *earlier* commit than the fetched tip,
@@ -241,20 +245,20 @@ class MockGitRepository(GitRepository):
         HEAD afterwards — letting a rollback test pass without the rollback
         having restored anything.
         """
-        self._operations.append(f"reset_hard: {ref}")
+        self._operations.append(f"reset_keep: {ref}")
         target = self.resolve(ref)
-        commits = self._commits.copy()
+        # A hard reset discards locally created commits wherever it lands —
+        # after `reset --hard FETCH_HEAD` the release commit is unreachable,
+        # not sitting in history before the fetched tip. So drop them first,
+        # then truncate at the target; the truncation is what distinguishes a
+        # rollback to an earlier commit from a forward reset onto the tip.
+        local = set(self._local_commit_shas)
+        commits = [c for c in self._commits if c.sha not in local]
         index = next((i for i, c in enumerate(commits) if c.sha == target), None)
         if index is not None:
             commits = commits[: index + 1]
-        else:
-            local = set(self._local_commit_shas)
-            commits = [c for c in commits if c.sha not in local]
         self._commits = commits
-        remaining = {c.sha for c in commits}
-        self._local_commit_shas = [
-            sha for sha in self._local_commit_shas if sha in remaining
-        ]
+        self._local_commit_shas.clear()
         self._staged_files.clear()
 
     def delete_tag(self, name: str) -> None:

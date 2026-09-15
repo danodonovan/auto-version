@@ -89,7 +89,7 @@ Tests use `MockGitRepository` (never real git). Fixtures are in `tests/conftest.
 - `mock_repo` — a fresh `MockGitRepository` instance
 - `simple_commit` — a standard `CommitInfo` fixture
 
-`MockGitRepository` is both a builder and a spy: set up state with `add_commit()` / `add_tag()`, then assert on the git operations that ran via `get_operations()` (logs entries like `create_tag: …`, `create_commit: …`, `stage_files: …`, `push: …`, `fetch: …`, `reset_hard: …`, `delete_tag: …`). Use this to verify orchestration behavior without mutating a real repo.
+`MockGitRepository` is both a builder and a spy: set up state with `add_commit()` / `add_tag()`, then assert on the git operations that ran via `get_operations()` (logs entries like `create_tag: …`, `create_commit: …`, `stage_files: …`, `push: …`, `fetch: …`, `reset_keep: …`, `delete_tag: …`). Use this to verify orchestration behavior without mutating a real repo.
 
 For publication (`release_and_publish`), the mock also simulates contention and
 the states `--push` must refuse:

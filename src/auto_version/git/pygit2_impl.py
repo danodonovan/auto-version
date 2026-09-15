@@ -1,5 +1,6 @@
 """Real git repository implementation using pygit2."""
 
+import os
 import re
 import subprocess
 from datetime import datetime, timezone
@@ -342,18 +343,21 @@ class PyGit2Repository(GitRepository):
                 ),
             )
 
-    def reset_hard(self, ref: str) -> None:
-        """Discard local commits and working-tree changes, moving to ``ref``.
+    def reset_keep(self, ref: str) -> None:
+        """Move HEAD to ``ref``, refusing to overwrite local changes.
+
+        ``--keep`` rather than ``--hard``: it rewrites only files that differ
+        between HEAD and the target, and aborts if one of them is modified
+        locally. The rollback paths depend on that — after ``release()`` the
+        only differing files are the release's own assets, so a build command
+        that edited some *other* tracked file is left exactly as it is.
 
         The index must be re-read afterwards. pygit2 caches it in memory, and
-        the reset above rewrote it on disk, so ``create_commit`` — which
-        commits ``index.write_tree()``, i.e. the *whole* index rather than
-        just the files it was handed — would otherwise write the pre-reset
-        snapshot. On a retry that silently reverts whatever the reset brought
-        in: the next release commit would undo the version bump and changelog
-        entry of the release that just won the race.
+        the reset rewrote it on disk, so ``create_commit`` — which commits
+        ``index.write_tree()``, the *whole* index — would otherwise write the
+        pre-reset snapshot and silently revert whatever the reset brought in.
         """
-        self._run_git("reset", "--hard", ref)
+        self._run_git("reset", "--keep", ref)
         self._repo.index.read(True)
 
     def delete_tag(self, name: str) -> None:
@@ -420,6 +424,10 @@ class PyGit2Repository(GitRepository):
                 capture_output=True,
                 text=True,
                 check=check,
+                # Several callers classify git's messages by their English
+                # wording. Pin the locale so a translated git cannot turn a
+                # recognised condition into an unrecognised one.
+                env={**os.environ, "LC_ALL": "C"},
             )
         except subprocess.CalledProcessError as exc:
             exc.cmd = [scrub_credentials(str(arg)) for arg in exc.cmd]
