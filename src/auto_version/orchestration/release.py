@@ -242,15 +242,7 @@ class ReleaseOrchestrator:
             # repo's files are untracked — but not if they are ignored.)
             return self.release(dry_run=False)
 
-        def rollback_to_base_if_safe() -> None:
-            if self.repo.is_dirty():
-                raise ValueError(
-                    "the build command left files in the worktree that are "
-                    "not part of the release, and rollback would discard "
-                    "them. Publishing stopped without resetting the branch. "
-                    "Add them to the release's assets, ignore them, or have "
-                    "the build command clean up after itself."
-                )
+        def rollback_to_base() -> None:
             self.repo.reset_hard(base_sha)
 
         attempt = 0
@@ -283,7 +275,7 @@ class ReleaseOrchestrator:
                     # No retry remains: roll back locally and fail immediately
                     # instead of preparing state for another attempt.
                     self.repo.delete_tag(result.tag)
-                    rollback_to_base_if_safe()
+                    rollback_to_base()
                     raise
                 # Drop the tag before resetting so it cannot survive pointing
                 # at a commit that is about to stop existing. If the deletion
@@ -303,7 +295,7 @@ class ReleaseOrchestrator:
                     # cannot tell from unreleased work, and would release
                     # again on top of, duplicating the commit and its
                     # changelog entry. Put the branch back instead.
-                    rollback_to_base_if_safe()
+                    rollback_to_base()
                     raise
 
                 if not self.repo.is_ancestor(base_sha, fetched):
@@ -311,7 +303,7 @@ class ReleaseOrchestrator:
                     # the remote was rewritten. Resetting onto the fetched tip
                     # would discard work this method did not create, so put
                     # the release back where it started and stop.
-                    rollback_to_base_if_safe()
+                    rollback_to_base()
                     # Describe the target as "<branch> on <remote>" rather
                     # than composing "<remote>/<branch>": remote may be a URL,
                     # which would render as a ref nobody can rebase onto.
