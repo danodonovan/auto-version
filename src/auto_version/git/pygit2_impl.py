@@ -259,32 +259,102 @@ class PyGit2Repository(GitRepository):
         )
 
     def create_commit(self, message: str, files: list[Path]) -> str:
-        """Create a commit with the specified files."""
-        # Files should already be staged via stage_files()
-        # Get tree from index
-        tree = self._repo.index.write_tree()
+        """Commit HEAD's tree with ``files`` applied, and nothing else.
 
-        # Get parent commit
+        The tree is built from HEAD plus the named paths rather than from the
+        index. Committing ``index.write_tree()`` commits whatever the index
+        happens to hold, so work a developer had staged before the release ran
+        was swept into the release commit — silently, under a ``release:``
+        message where nobody would look for it, and misrepresenting the
+        release's own diff. The ``files`` argument was decorative.
+
+        Building the tree from HEAD makes it mean what it says. The on-disk
+        index is left as ``stage_files`` wrote it, so a pre-staged change stays
+        staged and uncommitted, exactly where its author left it.
+        """
+        repo_root = self.get_repo_root()
+
         try:
             parent = self._repo.revparse_single("HEAD")
             parents = [parent.id]
         except KeyError:
+            parent = None
             parents = []
 
-        # Get signature
+        # A free-standing index used only as a tree builder: it is never
+        # written to disk, so the real index — and anything staged in it —
+        # is untouched.
+        tree = pygit2.Index()
+        if parent is not None:
+            tree.read_tree(parent.tree)
+
+        for file_path in files:
+            rel = self._repo_relative(file_path, repo_root)
+            absolute = repo_root / rel
+            if absolute.is_symlink():
+                blob = self._repo.create_blob(os.readlink(absolute).encode())
+                mode = pygit2.GIT_FILEMODE_LINK
+            elif absolute.exists():
+                # Through the workdir rather than from bytes, so the repository's
+                # clean filters and line-ending config apply as they would to
+                # `git add`.
+                blob = self._repo.create_blob_fromworkdir(rel)
+                mode = self._blob_mode(tree, rel, absolute)
+            else:
+                # release() only names files it has written, so an absent path
+                # means the build command deleted one. Record the deletion
+                # rather than resurrecting the old content from HEAD.
+                if rel in tree:
+                    tree.remove(rel)
+                continue
+            tree.add(pygit2.IndexEntry(rel, blob, mode))
+
+        # write_tree needs the repository: a free-standing index has no object
+        # database of its own to write the tree into.
+        tree_id = tree.write_tree(self._repo)
+
         signature = self._repo.default_signature
 
-        # Create commit
         commit_oid = self._repo.create_commit(
             "HEAD",
             signature,
             signature,
             message,
-            tree,
+            tree_id,
             parents,
         )
 
         return str(commit_oid)
+
+    @staticmethod
+    def _repo_relative(file_path: Path, repo_root: Path) -> str:
+        """``file_path`` as a path relative to the repository root."""
+        if file_path.is_absolute():
+            return Path(file_path).relative_to(repo_root).as_posix()
+        return Path(file_path).as_posix()
+
+    @staticmethod
+    def _blob_mode(tree: "pygit2.Index", rel: str, absolute: Path) -> int:
+        """The filemode to record for ``rel``: git's existing one, else disk's.
+
+        Keeping the mode git already has matters where the filesystem does not
+        carry an executable bit (Windows, a mount with ``noexec``, ``core.fileMode
+        = false``): deriving it from disk every time would quietly clear the bit
+        on a file the release merely rewrote. Only blob modes are carried over —
+        a path that stopped being a symlink must not keep a link mode.
+        """
+        if rel in tree:
+            existing = int(tree[rel].mode)
+            if existing in (
+                pygit2.GIT_FILEMODE_BLOB,
+                pygit2.GIT_FILEMODE_BLOB_EXECUTABLE,
+            ):
+                return existing
+        return (
+            pygit2.GIT_FILEMODE_BLOB_EXECUTABLE
+            if os.access(absolute, os.X_OK)
+            else pygit2.GIT_FILEMODE_BLOB
+        )
 
     def get_current_branch(self) -> str | None:
         """Get the name of the current branch, or None if HEAD is detached.
@@ -317,15 +387,15 @@ class PyGit2Repository(GitRepository):
         return Path(self._repo.workdir)
 
     def stage_files(self, files: list[Path]) -> None:
-        """Stage files for commit."""
+        """Stage files for commit.
+
+        Still worth doing now that ``create_commit`` builds its own tree: it
+        leaves the index agreeing with the commit for the release's own paths,
+        so ``git status`` after a release shows only what was already there.
+        """
         repo_root = self.get_repo_root()
         for file_path in files:
-            # Make path relative to repo root
-            if file_path.is_absolute():
-                rel_path = file_path.relative_to(repo_root)
-            else:
-                rel_path = file_path
-            self._repo.index.add(str(rel_path))
+            self._repo.index.add(self._repo_relative(file_path, repo_root))
         self._repo.index.write()
 
     def fetch(self, remote: str, branch: str) -> str:
