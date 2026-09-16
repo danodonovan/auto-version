@@ -480,6 +480,29 @@ def test_rolls_back_if_the_resync_fetch_fails(repo, package):
     assert "kg-1.0.1" not in repo.get_tags()
 
 
+def test_rolls_back_if_the_containment_check_fails(repo, package):
+    """`is_ancestor` propagates fatal merge-base errors, after the tag is gone.
+
+    Like a failed resync fetch, an exception here must not strand an untagged
+    release commit at HEAD for the next run to release on top of.
+    """
+    repo.queue_push_failures(1)
+
+    def broken_is_ancestor(ancestor: str, descendant: str) -> bool:
+        raise RuntimeError("git merge-base --is-ancestor failed (exit 128)")
+
+    repo.is_ancestor = broken_is_ancestor  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="merge-base"):
+        _publish(repo, package)
+
+    ops = repo.get_operations()
+    assert "delete_tag: kg-1.0.1" in ops
+    assert "reset_keep: fix1" in ops  # back to the pre-release commit
+    assert repo.resolve("HEAD") == "fix1"
+    assert "kg-1.0.1" not in repo.get_tags()
+
+
 def test_advances_the_baseline_after_each_successful_retry(repo, package):
     """The containment check must compare against *this* attempt's start.
 

@@ -326,16 +326,19 @@ class ReleaseOrchestrator:
                 # rejected push until the retries run out.
                 try:
                     fetched = self.repo.fetch(remote, branch)
+                    contains_base = self.repo.is_ancestor(base_sha, fetched)
                 except Exception:
-                    # The tag is already gone, so failing here would strand an
-                    # untagged release commit at HEAD — which a later run
-                    # cannot tell from unreleased work, and would release
-                    # again on top of, duplicating the commit and its
-                    # changelog entry. Put the branch back instead.
+                    # The tag is already gone, so failing here — in the fetch,
+                    # or in the containment check, which propagates fatal
+                    # merge-base errors — would strand an untagged release
+                    # commit at HEAD. A later run cannot tell that from
+                    # unreleased work, and would release again on top of it,
+                    # duplicating the commit and its changelog entry. Put the
+                    # branch back instead.
                     reset_to(base_sha, result)
                     raise
 
-                if not self.repo.is_ancestor(base_sha, fetched):
+                if not contains_base:
                     # The branch carries commits the remote does not have, or
                     # the remote was rewritten. Resetting onto the fetched tip
                     # would discard work this method did not create, so put
