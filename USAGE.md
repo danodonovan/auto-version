@@ -235,10 +235,10 @@ Ignored files never count as dirty — build output under `.gitignore` neither b
 pre-flight check nor a retry.
 
 `--push` refuses to run on a dirty worktree, because retrying resets the
-checkout. Untracked files count: `git reset --hard` spares an untracked file
-only while its path is absent from the tree being reset onto, so a concurrent
-release that adds a file at that path would overwrite it. Ignored files (build
-output, virtualenvs) do not count. It also
+checkout. Untracked files count: `git reset --keep` refuses to overwrite an
+untracked file whose path the tree being reset onto adds, so a concurrent
+release that adds a file at that path would abort the retry midway rather than
+complete it. Ignored files (build output, virtualenvs) do not count. It also
 refuses a detached HEAD unless you pass `--branch`, rather than guessing where
 the release should land.
 

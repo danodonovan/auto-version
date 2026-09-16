@@ -243,9 +243,9 @@ class GitRepository(ABC):
     def is_dirty(self) -> bool:
         """Whether the worktree holds local state that a reset would destroy.
 
-        Untracked files count. ``git reset --hard`` preserves an untracked
-        file only while its path is absent from the tree being reset onto; if
-        that tree tracks the path, the file is overwritten without warning.
-        Ignored files do not count.
+        Untracked files count. ``git reset --keep`` refuses to overwrite an
+        untracked file whose path the target tree adds, so a retry landing on
+        such a tip would abort midway rather than complete. Ignored files do
+        not count.
         """
         pass

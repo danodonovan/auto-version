@@ -441,10 +441,11 @@ class PyGit2Repository(GitRepository):
         """Whether the worktree has any local state, tracked or untracked.
 
         Untracked files count. An earlier version excluded them, on the
-        reasoning that ``git reset --hard`` leaves untracked files alone —
-        which is only true while the path is *absent* from the tree being
-        reset onto. If a concurrent release adds a tracked file at a path
-        where an untracked one sits, the reset silently overwrites it.
+        reasoning that a reset leaves untracked files alone — which is only
+        true while the path is *absent* from the tree being reset onto. If a
+        concurrent release adds a tracked file at a path where an untracked
+        one sits, ``git reset --keep`` aborts rather than overwrite it, and
+        the retry fails midway.
 
         Ignored files do not count: ``git status --porcelain`` honours
         ``.gitignore``, so build output and virtualenvs do not block a
