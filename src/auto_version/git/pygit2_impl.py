@@ -296,14 +296,17 @@ class PyGit2Repository(GitRepository):
         only when HEAD was symbolic-*resolved*, so a normal checkout reported
         "HEAD". ``--push`` is the first caller, so this went unnoticed.
 
-        An unborn HEAD (a fresh repository with no commits) also has no
-        branch to push to, so it reports None as well. That is checked
-        explicitly rather than left to the ``GitError`` that reading
-        ``head`` would raise, so the intent is visible at the call site.
+        An unborn HEAD (a fresh repository with no commits) is not detached:
+        HEAD is still a symbolic ref naming the branch the first commit will
+        land on, so that name is returned. Reading ``head`` raises
+        ``GitError`` there, so the symbolic target is read directly.
         """
         try:
-            if self._repo.head_is_unborn or self._repo.head_is_detached:
+            if self._repo.head_is_detached:
                 return None
+            if self._repo.head_is_unborn:
+                target = str(self._repo.lookup_reference("HEAD").target)
+                return target.removeprefix("refs/heads/")
             return str(self._repo.head.shorthand)
         except pygit2.GitError:
             return None

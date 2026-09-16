@@ -129,7 +129,9 @@ class GitRepository(ABC):
         Returns None rather than a sentinel string: a detached HEAD has no
         branch, and a placeholder that looks like a branch name will be used
         like one — ``HEAD:refs/heads/HEAD`` pushes a remote branch literally
-        called "HEAD". Callers must handle None explicitly.
+        called "HEAD". Callers must handle None explicitly. An unborn HEAD is
+        not detached: it names the branch its first commit will land on, and
+        that name is returned.
         """
         pass
 

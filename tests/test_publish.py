@@ -724,6 +724,43 @@ def test_retry_restores_the_tag_if_the_reset_onto_the_fetched_tip_fails(repo, pa
     assert "kg-1.0.1" in repo.get_tags()  # restored
 
 
+def test_an_unborn_head_names_its_branch_rather_than_reporting_detached():
+    """A fresh repository is not detached: HEAD names the branch to be born.
+
+    Reporting None there made `--push` refuse a fresh repository with the
+    detached-HEAD message instead of reaching the unborn fallback, which
+    reports "no release needed". Reading `head` raises on an unborn HEAD, so
+    the symbolic target is read directly. No real repository is created: the
+    pygit2 handle is stubbed.
+    """
+    from types import SimpleNamespace
+
+    from auto_version.git.pygit2_impl import PyGit2Repository
+
+    class UnbornRepo:
+        head_is_detached = False
+        head_is_unborn = True
+
+        def lookup_reference(self, name: str) -> SimpleNamespace:
+            assert name == "HEAD"
+            return SimpleNamespace(target="refs/heads/main")
+
+        @property
+        def head(self) -> None:
+            raise AssertionError("head must not be read on an unborn HEAD")
+
+    class DetachedRepo:
+        head_is_detached = True
+        head_is_unborn = False
+
+    repo = PyGit2Repository.__new__(PyGit2Repository)
+    repo._repo = UnbornRepo()  # type: ignore[assignment]
+    assert repo.get_current_branch() == "main"
+
+    repo._repo = DetachedRepo()  # type: ignore[assignment]
+    assert repo.get_current_branch() is None
+
+
 def test_is_ancestor_surfaces_git_failures_rather_than_answering_no(monkeypatch):
     """Exit 1 is "no"; any other non-zero is an error and must propagate.
 
