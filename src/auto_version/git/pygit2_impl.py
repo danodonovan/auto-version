@@ -39,41 +39,69 @@ _NON_FAST_FORWARD_MARKERS = (
 # Matched on a single line, with the object-id structure required. Testing
 # the two phrases independently across the whole output would let a server
 # emit them in unrelated `remote:` lines and be read as contention.
-# The rejection reason git appends to a status line: "... (fetch first)".
-_REJECTION_REASON = re.compile(r"\(([^()]*)\)\s*$")
-
 _CAS_FAILURE = re.compile(
     r"cannot lock ref.*\bis at\s+[0-9a-f]{7,64}\s+but expected\s+[0-9a-f]{7,64}",
     re.IGNORECASE,
 )
 
+# The rejection reason git appends to a status line: "... (fetch first)".
+_REJECTION_REASON = re.compile(r"\(([^()]*)\)\s*$")
+
+# The reason git gives every ref when the receiving side's ref transaction
+# failed to commit — a compare-and-swap mismatch or a lock. A hook refusal
+# is reported as "(pre-receive hook declined)" instead, whatever it printed.
+_ATOMIC_TRANSACTION_FAILED = "atomic transaction failed"
+
+
+def _status_reason(line: str, status: str) -> str | None:
+    """The parenthesised reason ending one of git's push status lines.
+
+    ``None`` unless ``line`` is a ``status`` line ("! [rejected]" or
+    "! [remote rejected]") carrying a reason. Only the reason counts: the
+    refspec is user-controlled text sitting on the same line, and a tag that
+    happened to be named "non-fast-forward" would otherwise turn an "(already
+    exists)" refusal into contention.
+    """
+    line = line.strip().lower()
+    if not line.startswith(status):
+        return None
+    match = _REJECTION_REASON.search(line)
+    return match.group(1) if match else None
+
 
 def _is_non_fast_forward(git_output: str) -> bool:
     """Whether git's push output indicates the remote ref moved under us.
 
-    The plain markers are matched only on git's own ``! [rejected]`` status
-    line, never across the whole output. A server can print anything it likes
+    Only git's own status lines decide. A server can print anything it likes
     through ``remote:`` lines, and a hook that advises "please fetch first"
     would otherwise be read as contention — deleting the tag, resetting, and
     discarding a valid release that the server had simply refused.
 
-    ``! [remote rejected]`` is a different line and deliberately does not
-    match: that is the server saying no, not the branch moving.
+    The plain markers are read from the reason on a ``! [rejected]`` line.
+    ``! [remote rejected]`` is the server saying no, not the branch moving,
+    and counts only when its reason names the ref transaction:
+
+    * as the compare-and-swap diagnostic itself, which is how hosted servers
+      such as GitHub report it — ``(cannot lock ref '…': is at X but expected
+      Y)``;
+    * as ``(atomic transaction failed)``, which is how stock git reports it,
+      with the diagnostic on a separate ``remote:`` line. That line arrives
+      through the same channel as hook output, so a hook echoing the exact
+      wording is indistinguishable from the real thing on its own — which is
+      why the status line is required as well.
     """
-    for line in git_output.splitlines():
-        status = line.strip().lower()
-        if not status.startswith("! [rejected]"):
-            continue
-        # Only the parenthesised reason at the end of the line counts. The
-        # refspec is user-controlled text sitting on the same line, and a
-        # tag that happened to be named "non-fast-forward" would otherwise
-        # turn an "(already exists)" refusal into contention.
-        reason = _REJECTION_REASON.search(status)
-        if reason and any(
-            marker in reason.group(1) for marker in _NON_FAST_FORWARD_MARKERS
-        ):
+    lines = git_output.splitlines()
+    transaction_failed = False
+    for line in lines:
+        reason = _status_reason(line, "! [rejected]")
+        if reason and any(marker in reason for marker in _NON_FAST_FORWARD_MARKERS):
             return True
-    return any(_CAS_FAILURE.search(line) for line in git_output.splitlines())
+        reason = _status_reason(line, "! [remote rejected]")
+        if reason and _CAS_FAILURE.search(reason):
+            return True
+        if reason == _ATOMIC_TRANSACTION_FAILED:
+            transaction_failed = True
+    return transaction_failed and any(_CAS_FAILURE.search(line) for line in lines)
 
 
 def _is_missing_tag(git_output: str) -> bool:

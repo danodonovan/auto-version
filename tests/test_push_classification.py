@@ -90,7 +90,8 @@ def test_classification_is_case_insensitive():
     assert (
         _is_non_fast_forward(
             "REMOTE: ERROR: CANNOT LOCK REF 'X': IS AT EDA8436EC6797C6E "
-            "BUT EXPECTED 5959469FC1FD5E95"
+            "BUT EXPECTED 5959469FC1FD5E95\n"
+            " ! [REMOTE REJECTED] HEAD -> MAIN (ATOMIC TRANSACTION FAILED)"
         )
         is True
     )
@@ -122,6 +123,9 @@ remote: error: cannot lock ref 'refs/heads/main': Unable to create '/tmp/t2/orig
 error: failed to push some refs to '/tmp/t2/origin.git'
 """
 
+# git's own status line for a failed ref transaction (from ATOMIC_CONTENTION).
+ATOMIC_STATUS = " ! [remote rejected] HEAD -> main (atomic transaction failed)"
+
 
 def test_stale_lock_is_not_retryable():
     """ "cannot lock ref" alone is not contention.
@@ -143,14 +147,23 @@ def test_cas_failure_needs_the_whole_form_on_one_line():
     which enters the destructive retry-and-discard path.
     """
     oids = "is at eda8436ec6797c6e but expected 5959469fc1fd5e95"
-    assert _is_non_fast_forward("cannot lock ref 'refs/heads/main'") is False
-    assert _is_non_fast_forward(oids) is False
+    status = f"\n{ATOMIC_STATUS}"
+    assert _is_non_fast_forward(f"cannot lock ref 'refs/heads/main'{status}") is False
+    assert _is_non_fast_forward(f"{oids}{status}") is False
     # both phrases present, but on separate lines: not a CAS rejection
-    assert _is_non_fast_forward(f"remote: cannot lock ref 'x'\nremote: {oids}") is False
-    assert _is_non_fast_forward(f"cannot lock ref 'refs/heads/main': {oids}") is True
+    assert (
+        _is_non_fast_forward(f"remote: cannot lock ref 'x'\nremote: {oids}{status}")
+        is False
+    )
+    assert (
+        _is_non_fast_forward(f"cannot lock ref 'refs/heads/main': {oids}{status}")
+        is True
+    )
     # a plausible-looking pair without object ids is not the CAS form either
     assert (
-        _is_non_fast_forward("cannot lock ref 'x': is at HEAD but expected main")
+        _is_non_fast_forward(
+            f"cannot lock ref 'x': is at HEAD but expected main{status}"
+        )
         is False
     )
 
@@ -161,7 +174,7 @@ def test_cas_failure_accepts_sha256_object_ids():
     expected = "b" * 64
     output = (
         "remote: error: cannot lock ref 'refs/heads/main': "
-        f"is at {current} but expected {expected}"
+        f"is at {current} but expected {expected}\n{ATOMIC_STATUS}"
     )
     assert _is_non_fast_forward(output) is True
 
@@ -210,6 +223,45 @@ def test_hook_advice_containing_a_marker_is_not_retryable():
     server had simply refused.
     """
     assert _is_non_fast_forward(HOOK_ADVISING_FETCH) is False
+
+
+# --- real captured output: a hook that echoes the CAS wording itself ---
+
+HOOK_ECHOING_CAS_WORDING = """\
+remote: error: cannot lock ref 'refs/heads/main': is at eda8436ec6797c6e6e95cb8baf524502c87e3f5d but expected 5959469fc1fd5e95f33a6b4456b62c7a62af7024
+To ../origin.git
+ ! [remote rejected] HEAD -> main (pre-receive hook declined)
+ ! [remote rejected] kg-1.0.1 -> kg-1.0.1 (pre-receive hook declined)
+error: failed to push some refs to '../origin.git'
+"""
+
+
+def test_hook_echoing_the_cas_wording_is_not_retryable():
+    """receive-pack's CAS diagnostic and hook output share the `remote:` channel.
+
+    Captured from a pre-receive hook that prints the complete "cannot lock
+    ref … is at X but expected Y" line and declines. The text alone is
+    indistinguishable from real contention; git's status line is not — it
+    says "(pre-receive hook declined)", not "(atomic transaction failed)".
+    Read from the text alone, this refusal would be retried and the release
+    discarded on exhaustion.
+    """
+    assert _is_non_fast_forward(HOOK_ECHOING_CAS_WORDING) is False
+
+
+def test_cas_failure_reported_as_the_status_reason_is_retryable():
+    """Hosted servers such as GitHub put the CAS diagnostic in the reason itself.
+
+    No separate `remote:` line and no "(atomic transaction failed)": the
+    status line is git's own, so it needs no corroboration. Reproduced from
+    GitHub's wording rather than captured from a run here.
+    """
+    line = (
+        " ! [remote rejected] HEAD -> main (cannot lock ref 'refs/heads/main': "
+        "is at eda8436ec6797c6e6e95cb8baf524502c87e3f5d "
+        "but expected 5959469fc1fd5e95f33a6b4456b62c7a62af7024)"
+    )
+    assert _is_non_fast_forward(line) is True
 
 
 def test_markers_are_read_from_the_rejected_status_line_only():
