@@ -793,6 +793,31 @@ def test_an_unborn_head_names_its_branch_rather_than_reporting_detached():
     assert repo.get_current_branch() is None
 
 
+def test_git_errors_reading_head_propagate_rather_than_reading_as_detached():
+    """A broken repository is not a detached HEAD.
+
+    Swallowing GitError here made `--push` answer a corrupt or unreadable HEAD
+    with "pass --branch", which cannot help. Only the explicit detached state
+    returns None.
+    """
+    import pygit2
+
+    from auto_version.git.pygit2_impl import PyGit2Repository
+
+    class BrokenRepo:
+        head_is_unborn = False
+
+        @property
+        def head_is_detached(self) -> bool:
+            raise pygit2.GitError("could not read HEAD")
+
+    repo = PyGit2Repository.__new__(PyGit2Repository)
+    repo._repo = BrokenRepo()  # type: ignore[assignment]
+
+    with pytest.raises(pygit2.GitError, match="could not read HEAD"):
+        repo.get_current_branch()
+
+
 def test_is_ancestor_surfaces_git_failures_rather_than_answering_no(monkeypatch):
     """Exit 1 is "no"; any other non-zero is an error and must propagate.
 

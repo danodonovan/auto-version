@@ -300,16 +300,17 @@ class PyGit2Repository(GitRepository):
         HEAD is still a symbolic ref naming the branch the first commit will
         land on, so that name is returned. Reading ``head`` raises
         ``GitError`` there, so the symbolic target is read directly.
+
+        Any other ``GitError`` — an unreadable HEAD, repository I/O —
+        propagates. Returning None would report a broken repository as a
+        detached HEAD and ask for ``--branch``, which cannot help.
         """
-        try:
-            if self._repo.head_is_detached:
-                return None
-            if self._repo.head_is_unborn:
-                target = str(self._repo.lookup_reference("HEAD").target)
-                return target.removeprefix("refs/heads/")
-            return str(self._repo.head.shorthand)
-        except pygit2.GitError:
+        if self._repo.head_is_detached:
             return None
+        if self._repo.head_is_unborn:
+            target = str(self._repo.lookup_reference("HEAD").target)
+            return target.removeprefix("refs/heads/")
+        return str(self._repo.head.shorthand)
 
     def get_repo_root(self) -> Path:
         """Get the root directory of the git repository."""
