@@ -219,16 +219,28 @@ class MockGitRepository(GitRepository):
         if self._fetch_fails:
             self._fetch_fails = False
             raise RuntimeError("mock: fetch failed")
-        for commit in self._commits_arriving_on_fetch:
-            self._commits.append(commit)
-            self._fetched_tip = commit.sha
+        self._commits.extend(self._commits_arriving_on_fetch)
         self._commits_arriving_on_fetch.clear()
         self._tags.update(self._tags_arriving_on_fetch)
         self._tags_arriving_on_fetch.clear()
+        # The fetched tip is the newest commit the remote has — the newest
+        # not created locally — whether or not anything arrived. Left unset
+        # when nothing arrives, FETCH_HEAD would resolve to a sentinel absent
+        # from history and reset_keep would leave HEAD where it was, so a
+        # retry test without a registered winner would not be modelling a
+        # reset onto the remote tip at all.
+        local = set(self._local_commit_shas)
+        published = [c for c in self._commits if c.sha not in local]
+        self._fetched_tip = published[-1].sha if published else None
         return "FETCH_HEAD"
 
     def push(self, remote: str, refspecs: list[str]) -> None:
-        """Push refspecs, honouring any queued failures."""
+        """Push refspecs, honouring any queued failures.
+
+        A successful push publishes every local commit: they are remote
+        history from then on, so a later ``reset_keep`` must not drop them
+        as though they were still unpublished.
+        """
         self._operations.append(f"push: {remote} {' '.join(refspecs)}")
         if self._queued_push_failures:
             non_fast_forward = self._queued_push_failures.pop(0)
@@ -236,6 +248,7 @@ class MockGitRepository(GitRepository):
                 f"mock push rejected (non_fast_forward={non_fast_forward})",
                 non_fast_forward=non_fast_forward,
             )
+        self._local_commit_shas.clear()
 
     def reset_keep(self, ref: str) -> None:
         """Move history to ``ref``, discarding anything after it.
@@ -255,8 +268,8 @@ class MockGitRepository(GitRepository):
             self._reset_fails = False
             raise RuntimeError("mock: reset --keep aborted")
         target = self.resolve(ref)
-        # A hard reset discards locally created commits wherever it lands —
-        # after `reset --hard FETCH_HEAD` the release commit is unreachable,
+        # A reset discards locally created commits wherever it lands —
+        # after `reset --keep FETCH_HEAD` the release commit is unreachable,
         # not sitting in history before the fetched tip. So drop them first,
         # then truncate at the target; the truncation is what distinguishes a
         # rollback to an earlier commit from a forward reset onto the tip.
