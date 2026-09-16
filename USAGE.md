@@ -154,7 +154,7 @@ Output:
   Tag: mypackage-0.2.0
 
 💡 Run without --dry-run to create the release
-   Then push with: git push && git push --tags
+   ...or with --push to create and publish it
 ```
 
 ### 3. Create Release
@@ -172,12 +172,81 @@ This will:
 5. Create a commit: "release: mypackage 0.2.0"
 6. Create a tag: "mypackage-0.2.0"
 
-### 4. Push
+### 4. Publish
+
+`--push` **replaces** step 3 rather than following it: it creates the release
+*and* publishes it. Run it instead of a bare `auto-version release`:
 
 ```bash
-# Push commit and tags
-git push && git push --tags
+# Create the release and publish it in one atomic update
+auto-version release --push
 ```
+
+If you have already run step 3, the release exists locally and `--push` will
+report "no release needed" — the version comes from tags, and the local tag
+already claims it. Publish what you have with git directly; the exact command
+is printed by step 3:
+
+```bash
+git push --atomic origin HEAD:refs/heads/main refs/tags/mypackage-0.2.0
+```
+
+`--push` publishes the commit and tag as a single all-or-nothing ref update, so
+the tag can never land without the commit that bumped the version.
+
+If the remote branch moved while the release was being prepared — a concurrent
+release job in a monorepo, or an unrelated merge — the push is rejected. Rather
+than fail, `--push` **discards the local release and recomputes it** against the
+new tip, then pushes again (3 extra attempts by default, jittered):
+
+```bash
+auto-version release --push --remote origin --branch main --push-retries 3
+```
+
+Recomputing rather than rebasing is deliberate. A rebase would rewrite the
+release commit and strand the tag on the orphan, publishing a tag that is not an
+ancestor of the branch — and since the version is derived from tags, that
+corrupts every later release. Recomputing always yields a commit and tag that
+agree with each other and with the branch they are landing on.
+
+Failures that retrying cannot fix (bad credentials, unknown remote) are not
+retried.
+
+### Every outcome of `--push`, and what is left where
+
+| Outcome | Exit | Your checkout afterwards | Remote | What to do |
+| --- | --- | --- | --- | --- |
+| Published | 0 | release commit + tag, on the current tip | commit and tag landed together | nothing |
+| Nothing to release | 2 | unchanged | unchanged | nothing |
+| Push failed: credentials, hook, unknown remote | 4 | release **kept** — it is valid and based on the current tip | unchanged | fix the cause, then run the `git push --atomic …` command from the error against your original remote (a URL remote's credentials are redacted in the message) |
+| Rejected as non-fast-forward, retry succeeded | 0 | release **recomputed** on the new tip | landed | nothing |
+| Rejected, retries exhausted | 4 | release **discarded**; back at the commit you started from | unchanged | re-run |
+| Branch has commits the remote lacks | 4 | release rolled back; **your commits intact** | unchanged | `git fetch <remote> <branch> && git rebase FETCH_HEAD`, re-run |
+| Build command dirtied the tree after the release was created | 3 | release rolled back with `--keep`; **the leaked files intact** | unchanged | fix the build command, declare the files as assets, or ignore them — then re-run |
+| Dirty worktree / detached HEAD (pre-flight) | 3 | unchanged — nothing was created | unchanged | commit or stash / pass `--branch` |
+
+Two properties hold on every row. **Only what `--push` created is ever undone**: every
+reset is `git reset --keep`, which refuses to overwrite a file with local changes, and a
+retry only lands on a tip that contains the commit you started from. **A kept release is
+always reported as kept**, because any local release tag makes the next run say "no
+release needed".
+
+Ignored files never count as dirty — build output under `.gitignore` neither blocks the
+pre-flight check nor a retry.
+
+`--push` refuses to run on a dirty worktree, because retrying resets the
+checkout. Untracked files count: `git reset --keep` refuses to overwrite an
+untracked file whose path the tree being reset onto adds, so a concurrent
+release that adds a file at that path would abort the retry midway rather than
+complete it. Ignored files (build output, virtualenvs) do not count. It also
+refuses a detached HEAD unless you pass `--branch`, rather than guessing where
+the release should land.
+
+A retry only ever resets onto a tip that already contains the commit publishing
+started from, so it can never discard anything `--push` did not create. If your
+branch carries commits the remote does not have, the release is rolled back to
+where it started and you are asked to rebase — `--push` will not reset your
+commits away, and it will not rebase them for you either.
 
 ## Changelog Format
 
@@ -254,6 +323,8 @@ path_filters = [
 - `1`: Error (configuration, git, etc.)
 - `2`: No changes to release
 - `3`: Validation error
+- `4`: Push rejected — every attempt lost the race, or the push failed for a
+  reason retrying cannot fix (bad credentials, unknown remote). Nothing was pushed.
 
 ## Testing
 

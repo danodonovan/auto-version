@@ -6,6 +6,8 @@ from pathlib import Path
 import click
 
 from auto_version.config import Config
+from auto_version.git.interface import (BranchDiverged, PushRejected,
+                                        redact_remote)
 from auto_version.git.pygit2_impl import PyGit2Repository
 from auto_version.models import VersionBump
 from auto_version.orchestration.release import ReleaseOrchestrator
@@ -35,10 +37,41 @@ def main() -> None:
     is_flag=True,
     help="Show detailed output",
 )
+@click.option(
+    "--push/--no-push",
+    default=False,
+    help="Push the release commit and tag atomically, retrying if the "
+    "remote branch moved (recomputing the version each time)",
+)
+@click.option(
+    "--remote",
+    default="origin",
+    show_default=True,
+    help="Remote to push to (with --push)",
+)
+@click.option(
+    "--branch",
+    default=None,
+    help="Branch to push to (with --push; default: the current branch)",
+)
+@click.option(
+    "--push-retries",
+    # Plain int, not IntRange: a Click usage error exits 2, which this tool
+    # documents as "no release needed". release_and_publish rejects a
+    # negative count with ValueError, which exits 3 like other bad input.
+    type=int,
+    default=3,
+    show_default=True,
+    help="Extra attempts after a rejected push (0 disables retrying)",
+)
 def release(
     config_path: Path | None,
     dry_run: bool,
     verbose: bool,
+    push: bool,
+    remote: str,
+    branch: str | None,
+    push_retries: int,
 ) -> None:
     """Create a new release for a package.
 
@@ -57,7 +90,23 @@ def release(
         \b
         # Dry run to see what would happen
         auto-version release --dry-run
+
+        \b
+        # Release and publish it, tolerating concurrent release jobs
+        auto-version release --push
     """
+    if push and dry_run:
+        click.echo(
+            "Error: --push cannot be combined with --dry-run "
+            "(a dry run creates nothing to push).",
+            err=True,
+        )
+        sys.exit(3)
+
+    # Shown wherever the remote appears in output: a URL remote may carry
+    # a token, and these lines reach CI logs.
+    shown_remote = redact_remote(remote)
+
     try:
         # Find config file
         if config_path is None:
@@ -91,7 +140,12 @@ def release(
         if verbose:
             click.echo("Analyzing commits and calculating version bump...")
 
-        result = orchestrator.release(dry_run=dry_run)
+        if push:
+            result = orchestrator.release_and_publish(
+                remote=remote, branch=branch, retries=push_retries
+            )
+        else:
+            result = orchestrator.release(dry_run=dry_run)
 
         # Display results
         if result.bump_type == VersionBump.NONE:
@@ -194,11 +248,61 @@ def release(
 
         if dry_run:
             click.echo("\n💡 Run without --dry-run to create the release")
-            click.echo("   Then push with: git push && git push --tags")
+            click.echo("   ...or with --push to create and publish it")
+        elif push:
+            click.echo(f"\n✅ Pushed to {shown_remote} ({result.tag})")
         else:
+            # Name the branch rather than shelling out to
+            # `git branch --show-current`, which is empty on a detached HEAD
+            # and would print an invalid refspec (HEAD:refs/heads/).
+            target = repo.get_current_branch()
             click.echo("\n💡 Push the release:")
-            click.echo(f"   git push && git push origin {result.tag}")
+            if target is None:
+                click.echo(
+                    f"   git push --atomic {shown_remote} "
+                    f"HEAD:refs/heads/<branch> refs/tags/{result.tag}"
+                )
+                click.echo(
+                    "   HEAD is detached, so substitute the branch this "
+                    "release belongs on."
+                )
+            else:
+                click.echo(
+                    f"   git push --atomic {shown_remote} "
+                    f"HEAD:refs/heads/{target} refs/tags/{result.tag}"
+                )
+            click.echo(
+                "   (--push creates and publishes in one step; it cannot\n"
+                "    publish a release that already exists locally)"
+            )
 
+    except BranchDiverged as e:
+        # Message is complete on its own: re-running will not help until
+        # the branch is rebased, so the generic advice below must not run.
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(4)
+    except PushRejected as e:
+        click.echo(f"Error: {e}", err=True)
+        if e.non_fast_forward:
+            click.echo(
+                f"\nEvery attempt was rejected: {shown_remote} is moving faster "
+                "than the retries. Nothing was published, and the local "
+                "release was discarded — re-run to recompute it.",
+                err=True,
+            )
+        else:
+            click.echo(
+                "\nThe release was created locally but not published. It is "
+                "correct — only the push failed — so it has been left in "
+                "place. Fix the cause above, then re-run the git push shown in "
+                "the error against your original remote — any credentials in "
+                "a URL remote are redacted in that message, so it is not "
+                "runnable exactly as shown.\n"
+                "Until then this package will report 'no release needed', "
+                "because the local tag already claims that version.",
+                err=True,
+            )
+        sys.exit(4)
     except FileNotFoundError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)

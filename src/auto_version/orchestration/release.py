@@ -1,12 +1,17 @@
 """Main release orchestration logic."""
 
+import random
+import subprocess
+import time
 from pathlib import Path
+from typing import Callable
 
 from auto_version.analysis.commit_parser import parse_conventional_commit
 from auto_version.analysis.version_calculator import calculate_version_bump
 from auto_version.changelog.generator import update_changelog
 from auto_version.config import Config
-from auto_version.git.interface import GitRepository
+from auto_version.git.interface import (BranchDiverged, GitRepository,
+                                        PushRejected, redact_remote)
 from auto_version.models import ReleaseResult, Version, VersionBump
 from auto_version.versioning.updater import update_version_files
 
@@ -133,6 +138,273 @@ class ReleaseOrchestrator:
             commit_sha=commit_sha,
             commits_included=commits,
             dry_run=False,
+        )
+
+    def release_and_publish(
+        self,
+        remote: str = "origin",
+        branch: str | None = None,
+        retries: int = 3,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> ReleaseResult:
+        """Execute a release and publish it, re-deriving it if the push races.
+
+        The release commit and its tag are pushed in one atomic ref update. If
+        the remote branch moved under us — another package's release job
+        winning the race, or an unrelated merge landing — the local release is
+        **discarded and recomputed** against the new tip rather than replayed.
+
+        Replaying is what a rebase would do, and it is wrong here: the tag
+        ``release()`` created points at the pre-rebase commit, so rebasing
+        strands the tag on an orphan and publishes a tag that is not an
+        ancestor of the branch. Since the version is derived from tags, that
+        corrupts the input to every later release. Recomputing cannot: each
+        attempt produces a commit and tag that agree with each other and with
+        the branch they are about to land on.
+
+        What is left on disk depends on why publication failed, because the
+        two cases need opposite handling:
+
+        * **Rejected as non-fast-forward, retries exhausted.** The local
+          release is not merely unpushed, it is *wrong* — the version it
+          claims may have been taken by the release that won, and the bump
+          may have changed. It is discarded, so a re-run recomputes cleanly.
+        * **Failed for any other reason** (bad credentials, a hook, no such
+          remote). The release is correct and based on the current remote tip;
+          only publication failed. It is left in place so it can be pushed by
+          hand once the cause is fixed.
+
+        The distinction matters because *any* local release tag makes the next
+        run report "no release needed" — the version is derived from tags — so
+        leaving one behind is only safe when the caller is told it is there.
+
+        Every reset is ``git reset --keep``: it refuses to overwrite a file
+        with local changes, so no path through this method can destroy an
+        edit it did not make. A retry only ever resets onto a tip that
+        already contains the commit publishing started from, so it cannot
+        discard a commit this method did not create either. If the branch
+        carries commits the remote does not have — or the remote was
+        rewritten — the release is rolled back to where it started and the
+        caller is asked to rebase, rather than having its
+        commits reset away.
+
+        Args:
+            remote: Remote to push to
+            branch: Branch to push to (default: the current branch)
+            retries: Extra attempts after a rejected push (0 disables retrying)
+            sleep: Injected for tests; defaults to :func:`time.sleep`
+
+        Returns:
+            Result of the release that was published, or a ``NONE`` bump result
+            if there was nothing to release.
+
+        Raises:
+            ValueError: ``retries`` is negative, HEAD is detached and no
+                ``branch`` was given, or the worktree has local modifications.
+            BranchDiverged: The remote moved and this branch carries
+                commits it does not contain; the release was rolled back.
+            PushRejected: The push failed for a reason retrying cannot fix, or
+                every attempt was rejected.
+        """
+        shown_remote = redact_remote(remote)
+
+        if retries < 0:
+            raise ValueError(f"retries must be zero or greater, got {retries}")
+
+        if branch is None:
+            branch = self.repo.get_current_branch()
+            if branch is None:
+                raise ValueError(
+                    "HEAD is detached, so there is no branch to publish to. "
+                    "Pass an explicit branch (--branch) to say where this "
+                    "release should land."
+                )
+
+        # A retry resets the worktree, which would discard local modifications
+        # along with the release being retried. Checked before the first
+        # release() call, since release() dirties the tree itself.
+        if self.repo.is_dirty():
+            raise ValueError(
+                "the worktree has local modifications, which publishing may "
+                "discard when retrying a rejected push. Commit or stash them "
+                "first."
+            )
+
+        # The commit publishing starts from. A retry may only reset onto a tip
+        # that already contains it, so the reset can never discard more than
+        # this method created.
+        try:
+            base_sha = self.repo.resolve("HEAD")
+        except Exception as exc:
+            if not self._is_unborn_head_error(exc):
+                raise
+            # Unborn repository: no commits, so there is nothing to release
+            # and nothing to roll back to. Let release() report that the
+            # normal way instead of surfacing a rev-parse failure. (Usually
+            # the dirty-worktree check catches this first, since an unborn
+            # repo's files are untracked — but not if they are ignored.)
+            return self.release(dry_run=False)
+
+        def reset_to(target: str, result: ReleaseResult) -> None:
+            """``reset_keep(target)``, restoring the release's tag if it fails.
+
+            Every reset here follows a ``delete_tag``, and neither order is
+            safe on its own: reset-then-delete leaves an orphan tag if the
+            deletion fails, which silences the next run ("no release
+            needed"); delete-then-reset leaves an untagged release commit if
+            the reset aborts, which the next run cannot tell from unreleased
+            work and releases on top of. Recreating the tag on the release
+            commit puts the checkout back exactly as it was before the
+            rollback began.
+            """
+            try:
+                self.repo.reset_keep(target)
+            except Exception:
+                self.repo.create_tag(
+                    result.tag, f"Release {result.new_version}", result.commit_sha
+                )
+                raise
+
+        attempt = 0
+        while True:
+            result = self.release(dry_run=False)
+
+            if result.bump_type == VersionBump.NONE:
+                return result
+
+            try:
+                self.repo.push(
+                    remote,
+                    [f"HEAD:refs/heads/{branch}", f"refs/tags/{result.tag}"],
+                )
+            except PushRejected as exc:
+                if not exc.non_fast_forward:
+                    # Correct release, external failure: leave it to be pushed
+                    # by hand. The caller reports the tag and the command.
+                    raise
+                if self.repo.is_dirty():
+                    # release() commits what it creates, so anything left here
+                    # came from the build command writing outside its declared
+                    # assets. A hard reset would destroy a tracked file it
+                    # edited, but `--keep` moves HEAD while refusing to touch
+                    # any file with local changes: the only files differing
+                    # between the release commit and base_sha are the release's
+                    # own assets, so the leak is left exactly where it is.
+                    #
+                    # Not "push it by hand": we are here because the branch
+                    # moved, so the local release is non-fast-forward and its
+                    # version may already be stale. The only correct recovery
+                    # from contention is discard-and-rerun, which this does.
+                    self.repo.delete_tag(result.tag)
+                    reset_to(base_sha, result)
+                    raise ValueError(
+                        "the build command left changes in the worktree that "
+                        "are not part of the release (see `git status`). The "
+                        f"release was rolled back to {base_sha[:7]} with those "
+                        "changes intact, and nothing was published. Publishing "
+                        "cannot retry while they are present: add them to the "
+                        "release's assets, ignore them, or have the build "
+                        "command clean up after itself — then re-run."
+                    )
+                if attempt >= retries:
+                    # No retry remains: roll back locally and fail immediately
+                    # instead of preparing state for another attempt. The
+                    # worktree is clean here — the check above already raised
+                    # otherwise — so the rollback cannot discard build output.
+                    self.repo.delete_tag(result.tag)
+                    reset_to(base_sha, result)
+                    raise
+                # Drop the tag before resetting so it cannot survive pointing
+                # at a commit that is about to stop existing. If the deletion
+                # genuinely fails this raises, and the reset below is skipped
+                # rather than orphaning the tag.
+                self.repo.delete_tag(result.tag)
+                # Reset to the ref fetch() names, not to a composed
+                # "<remote>/<branch>": the remote-tracking ref is only
+                # updated opportunistically, so composing it risks resetting
+                # to the tip we just lost the race to and repeating the same
+                # rejected push until the retries run out.
+                try:
+                    fetched = self.repo.fetch(remote, branch)
+                    contains_base = self.repo.is_ancestor(base_sha, fetched)
+                except Exception:
+                    # The tag is already gone, so failing here — in the fetch,
+                    # or in the containment check, which propagates fatal
+                    # merge-base errors — would strand an untagged release
+                    # commit at HEAD. A later run cannot tell that from
+                    # unreleased work, and would release again on top of it,
+                    # duplicating the commit and its changelog entry. Put the
+                    # branch back instead.
+                    reset_to(base_sha, result)
+                    raise
+
+                if not contains_base:
+                    # The branch carries commits the remote does not have, or
+                    # the remote was rewritten. Resetting onto the fetched tip
+                    # would discard work this method did not create, so put
+                    # the release back where it started and stop.
+                    reset_to(base_sha, result)
+                    # Describe the target as "<branch> on <remote>" rather
+                    # than composing "<remote>/<branch>": remote may be a URL,
+                    # which would render as a ref nobody can rebase onto.
+                    # A URL remote's credentials are redacted in the command
+                    # below, so it is not runnable as printed. Say so rather
+                    # than print the secret.
+                    redaction_note = (
+                        " The remote's credentials are redacted in that "
+                        "command, so run it against your original remote."
+                        if shown_remote != remote
+                        else ""
+                    )
+                    raise BranchDiverged(
+                        f"{branch} on {shown_remote} has moved, and this "
+                        f"branch has "
+                        f"commits that are not on it, so the release cannot "
+                        f"be recomputed without discarding them. The release "
+                        f"was rolled back to {base_sha[:7]} and nothing was "
+                        f"published. Rebase onto the fetched {branch} "
+                        f"(git fetch {shown_remote} {branch} && git rebase "
+                        f"FETCH_HEAD) and re-run.{redaction_note}"
+                        f"\n\nUnderlying push failure:\n{exc}",
+                        non_fast_forward=True,
+                    ) from exc
+
+                reset_to(fetched, result)
+                # This attempt's starting point, and the only state we promise
+                # to restore, is now the tip we just landed on. Leaving it at
+                # the original HEAD would let a later attempt accept a fetched
+                # tip that dropped what this one accepted — exactly the
+                # rewritten-history case the containment check exists to catch.
+                base_sha = self.repo.resolve("HEAD")
+                attempt += 1
+                sleep(self._backoff(attempt - 1))
+                continue
+
+            return result
+
+    @staticmethod
+    def _backoff(attempt: int) -> float:
+        """Jittered backoff so racing jobs do not retry in lockstep."""
+        return random.uniform(0.0, min(2.0**attempt, 8.0))
+
+    @staticmethod
+    def _is_unborn_head_error(exc: Exception) -> bool:
+        """Whether ``exc`` is git's "HEAD has no commit yet" failure."""
+        if not isinstance(exc, subprocess.CalledProcessError):
+            return False
+        raw_cmd = exc.cmd if isinstance(exc.cmd, (list, tuple)) else [str(exc.cmd)]
+        cmd = [str(part).lower() for part in raw_cmd]
+        if "rev-parse" not in cmd or "head" not in cmd:
+            return False
+        output = "\n".join(
+            part
+            for part in (exc.stderr, exc.output)
+            if isinstance(part, str) and part.strip()
+        ).lower()
+        return (
+            "needed a single revision" in output
+            or "unknown revision or path not in the working tree" in output
+            or "ambiguous argument 'head'" in output
         )
 
     def get_latest_version(self) -> Version | None:
