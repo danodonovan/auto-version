@@ -114,9 +114,18 @@ class Config:
         return config
 
     def get_package_name(self) -> str:
-        """Extract package name from tag_format."""
-        # tag_format is like "mypackage-{version}"
-        return self.tag_format.split("-{version}")[0]
+        """A display name for the package, derived from the tag format.
+
+        The fixed part before the version names the package in a monorepo
+        ("mypackage-{version}" -> "mypackage"). A single-package repository
+        tags bare versions, and "{version}" has no fixed part — so the package
+        directory's name stands in, rather than reporting "Release completed
+        for {version}".
+        """
+        prefix = self.tag_format.split("{version}")[0].rstrip("-_/@. ")
+        if prefix:
+            return prefix
+        return self.package_root.name or self.tag_format
 
     def format_tag(self, version: str) -> str:
         """Format a tag name from a version."""
