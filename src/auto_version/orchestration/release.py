@@ -245,8 +245,25 @@ class ReleaseOrchestrator:
             # repo's files are untracked — but not if they are ignored.)
             return self.release(dry_run=False)
 
-        def rollback_to_base() -> None:
-            self.repo.reset_keep(base_sha)
+        def reset_to(target: str, result: ReleaseResult) -> None:
+            """``reset_keep(target)``, restoring the release's tag if it fails.
+
+            Every reset here follows a ``delete_tag``, and neither order is
+            safe on its own: reset-then-delete leaves an orphan tag if the
+            deletion fails, which silences the next run ("no release
+            needed"); delete-then-reset leaves an untagged release commit if
+            the reset aborts, which the next run cannot tell from unreleased
+            work and releases on top of. Recreating the tag on the release
+            commit puts the checkout back exactly as it was before the
+            rollback began.
+            """
+            try:
+                self.repo.reset_keep(target)
+            except Exception:
+                self.repo.create_tag(
+                    result.tag, f"Release {result.new_version}", result.commit_sha
+                )
+                raise
 
         attempt = 0
         while True:
@@ -273,29 +290,13 @@ class ReleaseOrchestrator:
                     # any file with local changes: the only files differing
                     # between the release commit and base_sha are the release's
                     # own assets, so the leak is left exactly where it is.
-                    # Drop the tag, then reset — and if the reset fails, put
-                    # the tag back. Either operation can fail, and neither
-                    # order is safe on its own: reset-then-delete leaves an
-                    # orphan tag if the deletion fails, which silences the
-                    # next run ("no release needed"); delete-then-reset leaves
-                    # an untagged release commit if the reset aborts, which
-                    # the next run releases on top of. Recreating the tag on
-                    # the release commit restores exactly today's state.
                     #
                     # Not "push it by hand": we are here because the branch
                     # moved, so the local release is non-fast-forward and its
                     # version may already be stale. The only correct recovery
                     # from contention is discard-and-rerun, which this does.
                     self.repo.delete_tag(result.tag)
-                    try:
-                        self.repo.reset_keep(base_sha)
-                    except Exception:
-                        self.repo.create_tag(
-                            result.tag,
-                            f"Release {result.new_version}",
-                            result.commit_sha,
-                        )
-                        raise
+                    reset_to(base_sha, result)
                     raise ValueError(
                         "the build command left changes in the worktree that "
                         "are not part of the release (see `git status`). The "
@@ -311,7 +312,7 @@ class ReleaseOrchestrator:
                     # worktree is clean here — the check above already raised
                     # otherwise — so the rollback cannot discard build output.
                     self.repo.delete_tag(result.tag)
-                    rollback_to_base()
+                    reset_to(base_sha, result)
                     raise
                 # Drop the tag before resetting so it cannot survive pointing
                 # at a commit that is about to stop existing. If the deletion
@@ -331,7 +332,7 @@ class ReleaseOrchestrator:
                     # cannot tell from unreleased work, and would release
                     # again on top of, duplicating the commit and its
                     # changelog entry. Put the branch back instead.
-                    rollback_to_base()
+                    reset_to(base_sha, result)
                     raise
 
                 if not self.repo.is_ancestor(base_sha, fetched):
@@ -339,7 +340,7 @@ class ReleaseOrchestrator:
                     # the remote was rewritten. Resetting onto the fetched tip
                     # would discard work this method did not create, so put
                     # the release back where it started and stop.
-                    rollback_to_base()
+                    reset_to(base_sha, result)
                     # Describe the target as "<branch> on <remote>" rather
                     # than composing "<remote>/<branch>": remote may be a URL,
                     # which would render as a ref nobody can rebase onto.
@@ -356,7 +357,7 @@ class ReleaseOrchestrator:
                         non_fast_forward=True,
                     ) from exc
 
-                self.repo.reset_keep(fetched)
+                reset_to(fetched, result)
                 # This attempt's starting point, and the only state we promise
                 # to restore, is now the tip we just landed on. Leaving it at
                 # the original HEAD would let a later attempt accept a fetched

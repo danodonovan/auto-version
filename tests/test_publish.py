@@ -651,6 +651,56 @@ def test_dirty_rollback_leaves_everything_if_tag_deletion_fails(repo, package):
     assert "kg-1.0.1" in repo.get_tags()
 
 
+@pytest.mark.parametrize(
+    ("arm", "retries"),
+    [
+        pytest.param(lambda repo: None, 0, id="retries-exhausted"),
+        pytest.param(lambda repo: repo.fail_next_fetch(), 3, id="resync-fetch-failed"),
+        pytest.param(
+            lambda repo: repo.set_diverged_from_remote(True), 3, id="branch-diverged"
+        ),
+    ],
+)
+def test_every_rollback_restores_the_tag_if_the_reset_fails(
+    repo, package, arm, retries
+):
+    """A failed rollback reset must leave the release tagged, on every path.
+
+    Each rollback deletes the tag before resetting. If the reset then aborts,
+    the tag is recreated on the release commit so the checkout is exactly as
+    it was — otherwise HEAD sits on an untagged release commit, which the
+    next run cannot tell from unreleased work and releases on top of. The
+    dirty-worktree path always did this; these three paths did not.
+    """
+    repo.queue_push_failures(1)
+    arm(repo)
+    repo.fail_next_reset()
+
+    with pytest.raises(RuntimeError, match="reset --keep aborted"):
+        _publish(repo, package, retries=retries)
+
+    ops = repo.get_operations()
+    reset_at = ops.index("reset_keep: fix1")
+    assert ops.index("delete_tag: kg-1.0.1") < reset_at
+    assert any(op.startswith("create_tag: kg-1.0.1 at ") for op in ops[reset_at:])
+    assert "kg-1.0.1" in repo.get_tags()  # restored
+
+
+def test_retry_restores_the_tag_if_the_reset_onto_the_fetched_tip_fails(repo, package):
+    """The forward reset onto FETCH_HEAD is a reset after a delete_tag too."""
+    repo.queue_push_failures(1)
+    repo.add_release_arriving_on_fetch(_release_commit("winner", "dwpc"), "dwpc-1.0.1")
+    repo.fail_next_reset()
+
+    with pytest.raises(RuntimeError, match="reset --keep aborted"):
+        _publish(repo, package)
+
+    ops = repo.get_operations()
+    reset_at = ops.index("reset_keep: FETCH_HEAD")
+    assert any(op.startswith("create_tag: kg-1.0.1 at ") for op in ops[reset_at:])
+    assert "kg-1.0.1" in repo.get_tags()  # restored
+
+
 def test_is_ancestor_surfaces_git_failures_rather_than_answering_no(monkeypatch):
     """Exit 1 is "no"; any other non-zero is an error and must propagate.
 
