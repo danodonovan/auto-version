@@ -56,7 +56,10 @@ def main() -> None:
 )
 @click.option(
     "--push-retries",
-    type=click.IntRange(min=0),
+    # Plain int, not IntRange: a Click usage error exits 2, which this tool
+    # documents as "no release needed". release_and_publish rejects a
+    # negative count with ValueError, which exits 3 like other bad input.
+    type=int,
     default=3,
     show_default=True,
     help="Extra attempts after a rejected push (0 disables retrying)",
