@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pygit2
+import pygit2.enums
 
 from auto_version.git.interface import (GitRepository, PushRejected,
                                         redact_remote, scrub_credentials)
@@ -293,7 +294,7 @@ class PyGit2Repository(GitRepository):
             absolute = repo_root / rel
             if absolute.is_symlink():
                 blob = self._repo.create_blob(os.readlink(absolute).encode())
-                mode = pygit2.GIT_FILEMODE_LINK
+                mode = pygit2.enums.FileMode.LINK
             elif absolute.exists():
                 # Through the workdir rather than from bytes, so the repository's
                 # clean filters and line-ending config apply as they would to
@@ -334,7 +335,9 @@ class PyGit2Repository(GitRepository):
         return Path(file_path).as_posix()
 
     @staticmethod
-    def _blob_mode(tree: "pygit2.Index", rel: str, absolute: Path) -> int:
+    def _blob_mode(
+        tree: "pygit2.Index", rel: str, absolute: Path
+    ) -> "pygit2.enums.FileMode":
         """The filemode to record for ``rel``: git's existing one, else disk's.
 
         Keeping the mode git already has matters where the filesystem does not
@@ -344,16 +347,16 @@ class PyGit2Repository(GitRepository):
         a path that stopped being a symlink must not keep a link mode.
         """
         if rel in tree:
-            existing = int(tree[rel].mode)
+            existing = pygit2.enums.FileMode(tree[rel].mode)
             if existing in (
-                pygit2.GIT_FILEMODE_BLOB,
-                pygit2.GIT_FILEMODE_BLOB_EXECUTABLE,
+                pygit2.enums.FileMode.BLOB,
+                pygit2.enums.FileMode.BLOB_EXECUTABLE,
             ):
                 return existing
         return (
-            pygit2.GIT_FILEMODE_BLOB_EXECUTABLE
+            pygit2.enums.FileMode.BLOB_EXECUTABLE
             if os.access(absolute, os.X_OK)
-            else pygit2.GIT_FILEMODE_BLOB
+            else pygit2.enums.FileMode.BLOB
         )
 
     def get_current_branch(self) -> str | None:
