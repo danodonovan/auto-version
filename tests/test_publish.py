@@ -655,6 +655,65 @@ def test_git_failures_do_not_leak_remote_credentials(monkeypatch):
     assert "ghp_SECRET" not in (excinfo.value.stderr or "")
 
 
+def test_real_push_is_atomic_and_maps_failures_to_a_scrubbed_push_rejected(
+    monkeypatch,
+):
+    """The pygit2 adapter: one `--atomic` push of both refs, failures classified.
+
+    The orchestrator tests drive the mock and the classification tests call
+    `_is_non_fast_forward` directly, so without this a regression that drops
+    `--atomic`, reorders the refs, or stops mapping a non-zero exit to a
+    scrubbed PushRejected would pass. No real repository is created:
+    subprocess is stubbed (see CLAUDE.md), so this pins the argv and the
+    mapping rather than git itself.
+    """
+    import subprocess
+
+    from auto_version.git.pygit2_impl import PyGit2Repository
+
+    repo = PyGit2Repository.__new__(PyGit2Repository)
+    monkeypatch.setattr(repo, "get_repo_root", lambda: Path("/nowhere"))
+    secret_url = "https://ghp_SECRET@example.com/r.git"
+    refspecs = ["HEAD:refs/heads/main", "refs/tags/kg-1.0.1"]
+    calls: list[list[str]] = []
+
+    def stub_git(returncode: int, stderr: str):
+        def run(argv, **kwargs):
+            calls.append(argv)
+            return subprocess.CompletedProcess(
+                argv, returncode, stdout="", stderr=stderr
+            )
+
+        return run
+
+    # contention: classified as retryable, credentials scrubbed from the message
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        stub_git(1, f"To {secret_url}\n ! [rejected]  HEAD -> main (fetch first)\n"),
+    )
+    with pytest.raises(PushRejected) as excinfo:
+        repo.push(secret_url, refspecs)
+    assert calls == [["git", "push", "--atomic", secret_url, *refspecs]]
+    assert excinfo.value.non_fast_forward is True
+    assert "ghp_SECRET" not in str(excinfo.value)
+    assert "***@example.com" in str(excinfo.value)
+
+    # a hook refusal: not retryable
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        stub_git(1, " ! [remote rejected] HEAD -> main (pre-receive hook declined)\n"),
+    )
+    with pytest.raises(PushRejected) as excinfo:
+        repo.push("origin", refspecs)
+    assert excinfo.value.non_fast_forward is False
+
+    # success is silent
+    monkeypatch.setattr(subprocess, "run", stub_git(0, ""))
+    repo.push("origin", refspecs)
+
+
 def _dirty_after_release(repo, package):
     """An orchestrator whose release() leaves the worktree dirty afterwards."""
     orchestrator = ReleaseOrchestrator(repo, _config(package))
