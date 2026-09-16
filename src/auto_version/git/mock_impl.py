@@ -169,6 +169,10 @@ class MockGitRepository(GitRepository):
         """
         self._diverged_from_remote = diverged
 
+    def has_commits(self) -> bool:
+        """Whether any commit has been added or created."""
+        return bool(self._commits)
+
     def resolve(self, ref: str) -> str:
         """Resolve "HEAD", "FETCH_HEAD" or a literal SHA."""
         if ref == "HEAD":
