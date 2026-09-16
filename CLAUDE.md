@@ -69,6 +69,8 @@ prerelease_token = "b"                                # optional: "a" | "b" | "r
 release_as = "1.0.0"                                  # optional: force the base release (to start a line)
 ```
 
+`build_command` is the only thing in a release that can leave the worktree dirty — every file `release()` writes, it commits. So `release()` samples `dirty_paths()` either side of the build command and reports the difference as `ReleaseResult.leaked_paths`. `--push` refuses to publish while any are present (rolling the release back before the first push, so the outcome never depends on whether a push raced); bare `release` warns and names the `assets` line that would adopt them.
+
 Version bump priority: `MAJOR` (breaking `!` or `BREAKING CHANGE:` in body) > `MINOR` (feat) > `PATCH` (fix, perf, docs, etc.) > `NONE`. Non-conventional commits count as PATCH.
 
 ### Pre-releases (PEP 440)
@@ -95,7 +97,7 @@ For publication (`release_and_publish`), the mock also simulates contention and
 the states `--push` must refuse:
 - `queue_push_failures(count, non_fast_forward=True)` — make the next `count` pushes raise `PushRejected`
 - `add_release_arriving_on_fetch(commit, tag=None)` — reveal the winning job's release (its commit, and optionally its tag) on the next `fetch()`
-- `set_dirty(True)` — report local worktree state (tracked *or* untracked; `--push` refuses both)
+- `set_dirty(True)` / `set_dirty(True, ["uv.lock"])` — report local worktree state (tracked *or* untracked; `--push` refuses both), optionally at named paths
 - `set_current_branch(None)` — model a detached HEAD
 - `fail_tag_delete(name)` — make `delete_tag` raise, as a ref lock would
 - `set_diverged_from_remote(True)` — model a branch carrying commits the remote lacks

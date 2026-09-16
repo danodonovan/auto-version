@@ -8,8 +8,12 @@ from pathlib import Path
 
 import pygit2
 
-from auto_version.git.interface import (GitRepository, PushRejected,
-                                        redact_remote, scrub_credentials)
+from auto_version.git.interface import (
+    GitRepository,
+    PushRejected,
+    redact_remote,
+    scrub_credentials,
+)
 from auto_version.models import CommitInfo
 
 # Markers git uses when the remote ref moved under us — the one rejection a
@@ -441,8 +445,8 @@ class PyGit2Repository(GitRepository):
             f"{scrub_credentials(completed.stderr.strip())}"
         )
 
-    def is_dirty(self) -> bool:
-        """Whether the worktree has any local state, tracked or untracked.
+    def dirty_paths(self) -> list[str]:
+        """Every path git reports as locally modified, staged, or untracked.
 
         Untracked files count. An earlier version excluded them, on the
         reasoning that a reset leaves untracked files alone — which is only
@@ -455,11 +459,34 @@ class PyGit2Repository(GitRepository):
         ``.gitignore``, so build output and virtualenvs do not block a
         release.
         """
+        # -z rather than plain porcelain: without it git C-quotes any path
+        # holding a space, a quote or a non-ASCII byte, so the paths would
+        # have to be unquoted again before they could be printed as advice.
+        #
         # --untracked-files=normal is passed explicitly: status honours the
         # user's status.showUntrackedFiles setting, so without it a config of
         # "no" would silently report a worktree clean and disable this guard.
-        completed = self._run_git("status", "--porcelain", "--untracked-files=normal")
-        return bool(completed.stdout.strip())
+        completed = self._run_git(
+            "status", "--porcelain", "-z", "--untracked-files=normal"
+        )
+        records = completed.stdout.split("\0")
+        paths = []
+        index = 0
+        while index < len(records):
+            record = records[index]
+            index += 1
+            if len(record) < 4:
+                # The trailing empty field after the final NUL, and anything
+                # too short to be "XY <path>".
+                continue
+            status, path = record[:2], record[3:]
+            paths.append(path)
+            if "R" in status or "C" in status:
+                # A rename or copy is followed by its source path as a field of
+                # its own. Skipping it keeps that path from being read as a
+                # status record whose first three characters are file name.
+                index += 1
+        return paths
 
     def _run_git(
         self, *args: str, check: bool = True

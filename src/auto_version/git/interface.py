@@ -242,12 +242,21 @@ class GitRepository(ABC):
         pass
 
     @abstractmethod
-    def is_dirty(self) -> bool:
-        """Whether the worktree holds local state that a reset would destroy.
+    def dirty_paths(self) -> list[str]:
+        """Repo-relative paths holding local state that a reset would destroy.
 
         Untracked files count. ``git reset --keep`` refuses to overwrite an
         untracked file whose path the target tree adds, so a retry landing on
         such a tip would abort midway rather than complete. Ignored files do
         not count.
+
+        The paths, not just a yes/no, because a worktree left dirty by a
+        release is a build command writing outside its declared assets — and
+        naming the files turns "see ``git status``" into advice a CI log can
+        act on.
         """
         pass
+
+    def is_dirty(self) -> bool:
+        """Whether the worktree holds any such local state."""
+        return bool(self.dirty_paths())

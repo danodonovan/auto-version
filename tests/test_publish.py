@@ -10,6 +10,7 @@ and a recomputed version would look plausible for the wrong reason.
 ``sleep`` is injected throughout so the backoff does not slow the suite.
 """
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,12 +23,18 @@ from auto_version.models import CommitInfo, VersionBump
 from auto_version.orchestration.release import ReleaseOrchestrator
 
 
-def _config(tmp_path: Path) -> Config:
+def _config(
+    tmp_path: Path,
+    build_command: str | None = None,
+    assets: list[str] | None = None,
+) -> Config:
     return Config(
         tag_format="kg-{version}",
         version_toml=["pyproject.toml:project.version"],
         path_filters=["."],
         package_root=tmp_path,
+        build_command=build_command,
+        assets=assets or [],
     )
 
 
@@ -557,63 +564,62 @@ def test_advances_the_baseline_after_each_successful_retry(repo, package):
 
 
 def test_rolls_back_with_keep_when_the_build_command_leaves_files_behind(repo, package):
-    """A build command can dirty the worktree after the pre-flight check.
+    """A build command that writes outside its assets stops the release.
 
     The release is undone with `reset --keep`, which refuses to touch any file
     with local changes, so the leak survives and the release commit and tag
     are gone — leaving a re-run free to recompute once the leak is dealt with.
-    Nothing is fetched: the check runs before `delete_tag`/`fetch`.
     """
-    repo.queue_push_failures(1)
-    repo.add_release_arriving_on_fetch(_release_commit("winner", "dwpc"), "dwpc-1.0.1")
-
-    orchestrator = ReleaseOrchestrator(repo, _config(package))
-    original_release = orchestrator.release
-
-    def release_then_dirty(*args, **kwargs):
-        result = original_release(*args, **kwargs)
-        repo.set_dirty(True)  # the build command's leftovers
-        return result
-
-    orchestrator.release = release_then_dirty  # type: ignore[method-assign]
-
     with pytest.raises(ValueError, match="rolled back to fix1"):
-        orchestrator.release_and_publish(sleep=lambda _: None)
+        _leaking_build(repo, package).release_and_publish(sleep=lambda _: None)
 
     ops = repo.get_operations()
     assert "reset_keep: fix1" in ops  # undone, to where we began
     assert "delete_tag: kg-1.0.1" in ops
-    assert "reset_keep: FETCH_HEAD" not in ops  # never reset onto the new tip
-    assert not [op for op in ops if op.startswith("fetch:")]
     assert repo.resolve("HEAD") == "fix1"
     assert "kg-1.0.1" not in repo.get_tags()
 
 
-def test_dirty_check_precedes_the_fetch_so_leftovers_are_never_reset(repo, package):
-    """With leftovers present the fetch is never attempted, let alone rolled back.
+def test_a_leak_is_caught_before_the_first_push_not_only_on_retry(repo, package):
+    """Nothing is pushed or fetched, so the outcome cannot depend on a race.
 
-    `fail_next_fetch()` is armed but never fires: the post-release dirty check
-    runs before `delete_tag`/`fetch`, so no reset of any kind can reach the
-    leftovers.
+    Checking only after a rejected push made the same build command produce a
+    clean published release on a quiet day and this error on a busy one.
+    Armed failures for both the push and the fetch stay unfired.
     """
     repo.queue_push_failures(1)
     repo.fail_next_fetch()
 
-    orchestrator = ReleaseOrchestrator(repo, _config(package))
-    original_release = orchestrator.release
-
-    def release_then_dirty(*args, **kwargs):
-        result = original_release(*args, **kwargs)
-        repo.set_dirty(True)
-        return result
-
-    orchestrator.release = release_then_dirty  # type: ignore[method-assign]
-
     with pytest.raises(ValueError, match="build command left changes"):
-        orchestrator.release_and_publish(sleep=lambda _: None)
+        _leaking_build(repo, package).release_and_publish(sleep=lambda _: None)
 
-    # the armed fetch failure never fired: the dirty check ran first
-    assert not [op for op in repo.get_operations() if op.startswith("fetch:")]
+    ops = repo.get_operations()
+    assert not [op for op in ops if op.startswith("push:")]
+    assert not [op for op in ops if op.startswith("fetch:")]
+
+
+def test_the_leak_error_names_the_files_and_the_assets_line_to_add(repo, package):
+    """ "See `git status`" is no use in CI, where the worktree is already gone."""
+    with pytest.raises(ValueError) as excinfo:
+        _leaking_build(
+            repo, package, paths=["uv.lock", "docs/generated.md"]
+        ).release_and_publish(sleep=lambda _: None)
+
+    message = str(excinfo.value)
+    assert "uv.lock" in message and "docs/generated.md" in message
+    assert 'assets = ["uv.lock", "docs/generated.md"]' in message
+
+
+def test_a_leak_outside_the_package_suggests_no_assets_line(repo, package):
+    """It cannot become an asset of this package, so do not pretend it can."""
+    with pytest.raises(ValueError) as excinfo:
+        _leaking_build(
+            repo, package, paths=["../elsewhere/thing.txt"]
+        ).release_and_publish(sleep=lambda _: None)
+
+    message = str(excinfo.value)
+    assert "../elsewhere/thing.txt" in message
+    assert "assets = [" not in message
 
 
 def test_git_failures_do_not_leak_remote_credentials(monkeypatch):
@@ -714,17 +720,77 @@ def test_real_push_is_atomic_and_maps_failures_to_a_scrubbed_push_rejected(
     repo.push("origin", refspecs)
 
 
-def _dirty_after_release(repo, package):
-    """An orchestrator whose release() leaves the worktree dirty afterwards."""
+# --- detecting what a build command left behind ---
+
+
+def test_a_leak_is_what_the_build_command_added_not_what_was_already_dirty(
+    repo, package
+):
+    """Only files that appeared *while* the build command ran count.
+
+    A worktree can already be dirty when a release starts — an unrelated edit,
+    or staged work. Sampling only afterwards would report a developer's
+    half-finished change as a build-command leak and refuse to publish.
+    """
+    samples = iter(
+        [
+            ["half-finished.py"],
+            ["half-finished.py", "uv.lock", "declared.lock"],
+        ]
+    )
+    repo.dirty_paths = lambda: next(samples)  # type: ignore[method-assign]
+    config = _config(package, build_command="true", assets=["declared.lock"])
+
+    result = ReleaseOrchestrator(repo, config).release()
+
+    # "half-finished.py" was already there; "declared.lock" is declared output.
+    assert result.leaked_paths == ["uv.lock"]
+
+
+def test_no_build_command_means_the_worktree_is_never_inspected(repo, package):
+    """Nothing else in a release can leave the worktree dirty, so do not look.
+
+    Every file release() writes it commits, so a `git status` per release
+    would only cost time.
+    """
+    repo.dirty_paths = lambda: pytest.fail(  # type: ignore[method-assign,return-value]
+        "dirty_paths must not be called without a build command"
+    )
+
+    result = ReleaseOrchestrator(repo, _config(package)).release()
+
+    assert result.leaked_paths == []
+
+
+def test_a_real_build_command_leak_is_reported(repo, package, monkeypatch):
+    """End to end through subprocess: the command writes a file nobody declared."""
+    monkeypatch.setattr(
+        repo, "dirty_paths", lambda: [p.name for p in package.glob("*.leak")]
+    )
+    config = _config(package, build_command="touch stray.leak")
+
+    result = ReleaseOrchestrator(repo, config).release()
+
+    assert result.leaked_paths == ["stray.leak"]
+    assert (package / "stray.leak").exists()
+
+
+def _leaking_build(repo, package, paths=("uv.lock",)):
+    """An orchestrator whose release() reports build-command leftovers.
+
+    Models a build command writing outside its declared assets: release()
+    reports the paths it left, and the worktree is dirtied to match so the
+    rollback is exercised against a repository in the state it describes.
+    """
     orchestrator = ReleaseOrchestrator(repo, _config(package))
     original_release = orchestrator.release
 
-    def release_then_dirty(*args, **kwargs):
+    def release_then_leak(*args, **kwargs):
         result = original_release(*args, **kwargs)
-        repo.set_dirty(True)
-        return result
+        repo.set_dirty(True, list(paths))
+        return replace(result, leaked_paths=list(paths))
 
-    orchestrator.release = release_then_dirty  # type: ignore[method-assign]
+    orchestrator.release = release_then_leak  # type: ignore[method-assign]
     return orchestrator
 
 
@@ -736,11 +802,10 @@ def test_dirty_rollback_restores_the_tag_if_the_reset_fails(repo, package):
     otherwise the next run would find the release commit untagged, treat it as
     unreleased work, and release again on top of it.
     """
-    repo.queue_push_failures(1)
     repo.fail_next_reset()
 
     with pytest.raises(RuntimeError, match="reset --keep aborted"):
-        _dirty_after_release(repo, package).release_and_publish(sleep=lambda _: None)
+        _leaking_build(repo, package).release_and_publish(sleep=lambda _: None)
 
     ops = repo.get_operations()
     reset_at = ops.index("reset_keep: fix1")
@@ -755,11 +820,10 @@ def test_dirty_rollback_leaves_everything_if_tag_deletion_fails(repo, package):
     Reset-then-delete would leave HEAD at the base with the tag still pointing
     at the discarded commit — an orphan tag that silences the next run.
     """
-    repo.queue_push_failures(1)
     repo.fail_tag_delete("kg-1.0.1")
 
     with pytest.raises(RuntimeError, match="cannot delete tag"):
-        _dirty_after_release(repo, package).release_and_publish(sleep=lambda _: None)
+        _leaking_build(repo, package).release_and_publish(sleep=lambda _: None)
 
     assert not [op for op in repo.get_operations() if op.startswith("reset_keep:")]
     assert "kg-1.0.1" in repo.get_tags()
@@ -784,7 +848,7 @@ def test_every_rollback_restores_the_tag_if_the_reset_fails(
     the tag is recreated on the release commit so the checkout is exactly as
     it was — otherwise HEAD sits on an untagged release commit, which the
     next run cannot tell from unreleased work and releases on top of. The
-    dirty-worktree path always did this; these three paths did not.
+    build-command leak path always did this; these three paths did not.
     """
     repo.queue_push_failures(1)
     arm(repo)
