@@ -444,6 +444,38 @@ def test_rolls_back_rather_than_resetting_away_local_commits(repo, package):
     assert len([op for op in ops if op.startswith("push:")]) == 1
 
 
+def test_divergence_advice_says_when_the_remote_was_redacted(repo, package):
+    """The rebase command prints a redacted URL, so it is not runnable as shown.
+
+    The non-retryable push path already says so; the divergence path is the
+    only other place a command naming the remote is printed.
+    """
+    repo.queue_push_failures(1)
+    repo.add_release_arriving_on_fetch(_release_commit("winner", "dwpc"), "dwpc-1.0.1")
+    repo.set_diverged_from_remote(True)
+
+    with pytest.raises(PushRejected) as excinfo:
+        _publish(repo, package, remote="https://ghp_secret@example.com/r.git")
+
+    message = str(excinfo.value)
+    assert "ghp_secret" not in message
+    assert "git fetch https://***@example.com/r.git main" in message
+    assert "redacted" in message
+
+
+def test_divergence_advice_is_plain_for_a_named_remote(repo, package):
+    """No redaction happened, so no caveat about it."""
+    repo.queue_push_failures(1)
+    repo.add_release_arriving_on_fetch(_release_commit("winner", "dwpc"), "dwpc-1.0.1")
+    repo.set_diverged_from_remote(True)
+
+    with pytest.raises(PushRejected) as excinfo:
+        _publish(repo, package)
+
+    assert "git fetch origin main" in str(excinfo.value)
+    assert "redacted" not in str(excinfo.value)
+
+
 def test_checks_containment_against_the_fetched_tip(repo, package):
     """The containment test uses FETCH_HEAD, not a composed remote ref.
 

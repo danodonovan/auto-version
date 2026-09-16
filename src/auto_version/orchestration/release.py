@@ -347,6 +347,15 @@ class ReleaseOrchestrator:
                     # Describe the target as "<branch> on <remote>" rather
                     # than composing "<remote>/<branch>": remote may be a URL,
                     # which would render as a ref nobody can rebase onto.
+                    # A URL remote's credentials are redacted in the command
+                    # below, so it is not runnable as printed. Say so rather
+                    # than print the secret.
+                    redaction_note = (
+                        " The remote's credentials are redacted in that "
+                        "command, so run it against your original remote."
+                        if shown_remote != remote
+                        else ""
+                    )
                     raise BranchDiverged(
                         f"{branch} on {shown_remote} has moved, and this "
                         f"branch has "
@@ -355,7 +364,7 @@ class ReleaseOrchestrator:
                         f"was rolled back to {base_sha[:7]} and nothing was "
                         f"published. Rebase onto the fetched {branch} "
                         f"(git fetch {shown_remote} {branch} && git rebase "
-                        f"FETCH_HEAD) and re-run."
+                        f"FETCH_HEAD) and re-run.{redaction_note}"
                         f"\n\nUnderlying push failure:\n{exc}",
                         non_fast_forward=True,
                     ) from exc
