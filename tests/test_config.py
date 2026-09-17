@@ -176,3 +176,29 @@ def test_config_missing_required_fields():
             Config.from_file(config_path)
     finally:
         config_path.unlink()
+
+
+def test_a_bare_version_tag_format_names_the_package_after_its_directory():
+    """"{version}" has no prefix to name the package with.
+
+    Splitting on "-{version}" left the placeholder itself as the name, so a
+    single-package repository — the natural home for bare tags like "0.2.0" —
+    reported "Release completed for {version}".
+    """
+    config = Config(
+        tag_format="{version}",
+        version_toml=["pyproject.toml:project.version"],
+        package_root=Path("/repos/auto-version"),
+    )
+
+    assert config.get_package_name() == "auto-version"
+
+
+def test_a_prefixed_tag_format_still_names_the_package_after_the_prefix():
+    """Every separator style, not only the "-" the old split hard-coded."""
+    for tag_format in ("kg-{version}", "kg_{version}", "kg/{version}", "kg{version}"):
+        config = Config(
+            tag_format=tag_format,
+            version_toml=["pyproject.toml:project.version"],
+        )
+        assert config.get_package_name() == "kg", tag_format
