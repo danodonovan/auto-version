@@ -323,34 +323,31 @@ def test_rejects_negative_retries(repo, package):
         _publish(repo, package, retries=-1)
 
 
-def test_only_unborn_head_errors_fall_back_to_plain_release(package):
-    """Only the specific unborn-HEAD git error should enter the fallback."""
-    import subprocess
+def test_an_unborn_repository_falls_back_to_plain_release(package):
+    """No commits means nothing to release, and nothing to resolve HEAD to.
 
+    The repository is asked whether it has any commit rather than being made
+    to fail: HEAD is never resolved on this path, so the fallback cannot
+    depend on how git words a rev-parse failure.
+    """
     repo = MockGitRepository(repo_root=package)
-
-    def unborn_head(ref: str) -> str:
-        if ref == "HEAD":
-            raise subprocess.CalledProcessError(
-                128,
-                ["git", "rev-parse", "HEAD"],
-                stderr=(
-                    "fatal: ambiguous argument 'HEAD': "
-                    "unknown revision or path not in the working tree."
-                ),
-            )
-        return ref
-
-    repo.resolve = unborn_head  # type: ignore[method-assign]
+    resolved: list[str] = []
+    repo.resolve = lambda ref: resolved.append(ref) or ref  # type: ignore[method-assign,return-value]
 
     result = _publish(repo, package)
 
     assert result.bump_type == VersionBump.NONE
+    assert resolved == []
 
 
-def test_non_unborn_head_resolution_failures_propagate(package):
-    """Unexpected HEAD resolution failures must not be treated as unborn."""
+def test_head_resolution_failures_propagate(package):
+    """A repository with commits whose HEAD will not resolve is broken.
+
+    Reporting it as "no release needed" would hide a damaged repository
+    behind a success-shaped exit.
+    """
     repo = MockGitRepository(repo_root=package)
+    repo.add_commit(_commit("base"))
 
     def unexpected_failure(ref: str) -> str:
         if ref == "HEAD":
@@ -850,6 +847,41 @@ def test_an_unborn_head_names_its_branch_rather_than_reporting_detached():
 
     repo._repo = DetachedRepo()  # type: ignore[assignment]
     assert repo.get_current_branch() is None
+
+
+def test_has_commits_reads_the_unborn_state_and_lets_git_errors_through():
+    """The real backend answers from libgit2, not from a rev-parse failure.
+
+    An unborn HEAD is a repository fact; a GitError reading it is a broken
+    repository and must not be reported as an empty one, which would publish
+    nothing and say "no release needed".
+    """
+    import pygit2
+
+    from auto_version.git.pygit2_impl import PyGit2Repository
+
+    class UnbornRepo:
+        head_is_unborn = True
+
+    class PopulatedRepo:
+        head_is_unborn = False
+
+    class BrokenRepo:
+        @property
+        def head_is_unborn(self) -> bool:
+            raise pygit2.GitError("could not read HEAD")
+
+    repo = PyGit2Repository.__new__(PyGit2Repository)
+
+    repo._repo = UnbornRepo()  # type: ignore[assignment]
+    assert repo.has_commits() is False
+
+    repo._repo = PopulatedRepo()  # type: ignore[assignment]
+    assert repo.has_commits() is True
+
+    repo._repo = BrokenRepo()  # type: ignore[assignment]
+    with pytest.raises(pygit2.GitError, match="could not read HEAD"):
+        repo.has_commits()
 
 
 def test_git_errors_reading_head_propagate_rather_than_reading_as_detached():

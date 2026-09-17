@@ -216,6 +216,18 @@ class GitRepository(ABC):
         pass
 
     @abstractmethod
+    def has_commits(self) -> bool:
+        """Whether the repository has any commit yet.
+
+        False for an unborn HEAD — a repository whose first commit has not
+        been made. Callers ask before resolving HEAD, which fails there, so
+        that "nothing has been committed yet" never has to be recovered by
+        reading a failure back: an unreadable or damaged repository must
+        raise, not be reported as an empty one.
+        """
+        pass
+
+    @abstractmethod
     def resolve(self, ref: str) -> str:
         """Resolve a ref to its commit SHA.
 
