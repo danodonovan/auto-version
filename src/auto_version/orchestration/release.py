@@ -10,10 +10,18 @@ from auto_version.analysis.commit_parser import parse_conventional_commit
 from auto_version.analysis.version_calculator import calculate_version_bump
 from auto_version.changelog.generator import update_changelog
 from auto_version.config import Config
-from auto_version.git.interface import (BranchDiverged, GitRepository,
-                                        PushRejected, redact_remote)
+from auto_version.git.interface import (
+    BranchDiverged,
+    GitRepository,
+    PushRejected,
+    redact_remote,
+)
 from auto_version.models import ReleaseResult, Version, VersionBump
 from auto_version.versioning.updater import update_version_files
+
+# Enough to identify the mistake without burying the advice that follows it —
+# a build command that rewrote a whole directory would otherwise print it.
+_MAX_LEAKED_PATHS_SHOWN = 10
 
 
 class ReleaseOrchestrator:
@@ -109,14 +117,29 @@ class ReleaseOrchestrator:
         modified_files.append(changelog_path)
 
         # 9. Run build command (e.g., to regenerate lock files)
+        #
+        # Sampled either side of the command, not just after: the worktree can
+        # already be dirty when a release starts — an unrelated edit, or work a
+        # developer staged — and none of that is the build command's doing.
+        # Skipped entirely when no build command is configured: nothing else
+        # here can leave the worktree dirty, and this costs a `git status`.
+        leaked_paths: list[str] = []
         if self.config.build_command:
+            before = set(self.repo.dirty_paths())
             self._run_build_command(self.config.build_command, new_version)
+            leaked_paths = sorted(set(self.repo.dirty_paths()) - before)
 
         # 10. Add any additional assets (e.g., lock files)
+        declared = set()
         for asset in self.config.assets:
             asset_path = self.config.package_root / asset
+            declared.add(self._repo_relative(asset_path))
             if asset_path.exists():
                 modified_files.append(asset_path)
+        # A declared asset is release output, not a leak: it is committed just
+        # below. Whether the build command wrote it is exactly what `assets`
+        # exists to say.
+        leaked_paths = [path for path in leaked_paths if path not in declared]
 
         # 11. Create release commit
         self.repo.stage_files(modified_files)
@@ -138,6 +161,7 @@ class ReleaseOrchestrator:
             commit_sha=commit_sha,
             commits_included=commits,
             dry_run=False,
+            leaked_paths=leaked_paths,
         )
 
     def release_and_publish(
@@ -272,6 +296,23 @@ class ReleaseOrchestrator:
             if result.bump_type == VersionBump.NONE:
                 return result
 
+            if result.leaked_paths:
+                # The build command wrote outside its declared assets. Checked
+                # here rather than only after a rejected push: nothing has been
+                # published yet, so the rollback is unconditionally safe, and
+                # the contract stops depending on whether contention happened —
+                # the same build command used to produce a clean release on a
+                # quiet day and this error on a busy one.
+                #
+                # A hard reset would destroy a tracked file the command edited,
+                # but `--keep` moves HEAD while refusing to touch any file with
+                # local changes: the only files differing between the release
+                # commit and base_sha are the release's own, so the leak is left
+                # exactly where it is.
+                self.repo.delete_tag(result.tag)
+                reset_to(base_sha, result)
+                raise ValueError(self._leak_message(result.leaked_paths, base_sha))
+
             try:
                 self.repo.push(
                     remote,
@@ -282,30 +323,6 @@ class ReleaseOrchestrator:
                     # Correct release, external failure: leave it to be pushed
                     # by hand. The caller reports the tag and the command.
                     raise
-                if self.repo.is_dirty():
-                    # release() commits what it creates, so anything left here
-                    # came from the build command writing outside its declared
-                    # assets. A hard reset would destroy a tracked file it
-                    # edited, but `--keep` moves HEAD while refusing to touch
-                    # any file with local changes: the only files differing
-                    # between the release commit and base_sha are the release's
-                    # own assets, so the leak is left exactly where it is.
-                    #
-                    # Not "push it by hand": we are here because the branch
-                    # moved, so the local release is non-fast-forward and its
-                    # version may already be stale. The only correct recovery
-                    # from contention is discard-and-rerun, which this does.
-                    self.repo.delete_tag(result.tag)
-                    reset_to(base_sha, result)
-                    raise ValueError(
-                        "the build command left changes in the worktree that "
-                        "are not part of the release (see `git status`). The "
-                        f"release was rolled back to {base_sha[:7]} with those "
-                        "changes intact, and nothing was published. Publishing "
-                        "cannot retry while they are present: add them to the "
-                        "release's assets, ignore them, or have the build "
-                        "command clean up after itself — then re-run."
-                    )
                 if attempt >= retries:
                     # No retry remains: roll back locally and fail immediately
                     # instead of preparing state for another attempt. The
@@ -381,6 +398,84 @@ class ReleaseOrchestrator:
                 continue
 
             return result
+
+    def _repo_relative(self, path: Path) -> str:
+        """``path`` as the repository root sees it, matching ``dirty_paths``."""
+        try:
+            return (
+                path.resolve()
+                .relative_to(self.repo.get_repo_root().resolve())
+                .as_posix()
+            )
+        except ValueError:
+            # Outside the repository entirely; it can never match a reported
+            # path, and the unresolvable form is the closest honest answer.
+            return path.as_posix()
+
+    @staticmethod
+    def format_leaked_paths(leaked: list[str], indent: str = "  ") -> str:
+        """The leaked paths as a capped, indented listing.
+
+        Capped because a build command that rewrote a whole directory would
+        otherwise bury the advice that follows it.
+        """
+        shown = leaked[:_MAX_LEAKED_PATHS_SHOWN]
+        listing = "\n".join(f"{indent}{path}" for path in shown)
+        if len(leaked) > len(shown):
+            listing += f"\n{indent}... and {len(leaked) - len(shown)} more"
+        return listing
+
+    def _leak_message(self, leaked: list[str], base_sha: str) -> str:
+        """The error for a build command that wrote outside its assets.
+
+        Names the files and the config line that would adopt them. A leak is
+        nearly always an ``assets`` omission — ``uv lock`` writing ``uv.lock``
+        that ``assets`` forgot to list — and "see `git status`" is no use in a
+        CI log, where the worktree is already gone by the time anyone reads it.
+        """
+        message = (
+            "the build command left changes in the worktree that are not part "
+            f"of the release:\n{self.format_leaked_paths(leaked)}\n\n"
+            f"The release was rolled back to {base_sha[:7]} with those changes "
+            "intact, and nothing was published. Publishing cannot continue "
+            "while they are present: declare them as release assets, ignore "
+            "them, or have the build command clean up after itself — then "
+            "re-run."
+        )
+
+        suggestion = self.assets_suggestion(leaked)
+        if suggestion:
+            message += (
+                "\n\nIf they belong in the release, declare them under "
+                f"[tool.auto_version]:\n    {suggestion}"
+            )
+        return message
+
+    def assets_suggestion(self, leaked: list[str]) -> str:
+        """A copy-pasteable ``assets`` line adopting the leaked paths.
+
+        Paths are re-expressed relative to the package root, since that is what
+        ``assets`` entries are resolved against. One outside the package cannot
+        become an asset of it, so it is left out — and if that leaves nothing,
+        there is no config change to suggest and the caller omits the advice.
+        """
+        package_root = self.config.package_root.resolve()
+        repo_root = self.repo.get_repo_root().resolve()
+
+        entries = list(self.config.assets)
+        for path in leaked:
+            try:
+                entry = (
+                    (repo_root / path).resolve().relative_to(package_root).as_posix()
+                )
+            except ValueError:
+                continue
+            if entry not in entries:
+                entries.append(entry)
+
+        if entries == list(self.config.assets):
+            return ""
+        return "assets = [" + ", ".join(f'"{entry}"' for entry in entries) + "]"
 
     @staticmethod
     def _backoff(attempt: int) -> float:

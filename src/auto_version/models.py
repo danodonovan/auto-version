@@ -1,6 +1,6 @@
 """Core data models."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -142,3 +142,8 @@ class ReleaseResult:
     commit_sha: str
     commits_included: list[CommitInfo]
     dry_run: bool
+
+    # Paths the build command wrote that are not part of the release. Empty
+    # unless a build command is configured: nothing else in a release can
+    # leave the worktree dirty, since every file release() writes it commits.
+    leaked_paths: list[str] = field(default_factory=list)

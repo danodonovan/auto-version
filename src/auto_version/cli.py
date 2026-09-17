@@ -6,8 +6,7 @@ from pathlib import Path
 import click
 
 from auto_version.config import Config
-from auto_version.git.interface import (BranchDiverged, PushRejected,
-                                        redact_remote)
+from auto_version.git.interface import BranchDiverged, PushRejected, redact_remote
 from auto_version.git.pygit2_impl import PyGit2Repository
 from auto_version.models import VersionBump
 from auto_version.orchestration.release import ReleaseOrchestrator
@@ -168,6 +167,34 @@ def release(
 
         if not dry_run:
             click.echo(f"  Commit: {result.commit_sha[:7]}")
+
+        if result.leaked_paths:
+            # Only reachable without --push: publishing rolls the release back
+            # and raises instead. A warning rather than an error here, because
+            # erroring would change what plain `release` has always done — but
+            # silence would let the same build command pass today and fail the
+            # moment someone adds --push.
+            click.echo(
+                "\n⚠️  The build command wrote files the release does not " "include:",
+                err=True,
+            )
+            click.echo(
+                orchestrator.format_leaked_paths(result.leaked_paths, "     "), err=True
+            )
+            click.echo(
+                "   They are left in the worktree, uncommitted. Declare them "
+                "as release\n   assets, ignore them, or have the build command "
+                "clean up after itself —\n   --push refuses to publish while "
+                "they are present.",
+                err=True,
+            )
+            suggestion = orchestrator.assets_suggestion(result.leaked_paths)
+            if suggestion:
+                click.echo(
+                    "\n   If they belong in the release, declare them under "
+                    f"[tool.auto_version]:\n       {suggestion}",
+                    err=True,
+                )
 
         if verbose:
             click.echo(f"\n  Commits included ({len(result.commits_included)}):")

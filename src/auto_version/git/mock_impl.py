@@ -23,7 +23,7 @@ class MockGitRepository(GitRepository):
         self._fetched_tip: str | None = None
         self._diverged_from_remote = False
         self._current_branch: str | None = "main"
-        self._dirty = False
+        self._dirty_paths: list[str] = []
         self._tag_delete_failures: set[str] = set()
         self._fetch_fails = False
         self._reset_fails = False
@@ -156,9 +156,14 @@ class MockGitRepository(GitRepository):
         """Set the reported branch; None models a detached HEAD."""
         self._current_branch = branch
 
-    def set_dirty(self, dirty: bool) -> None:
-        """Set whether the worktree reports local state."""
-        self._dirty = dirty
+    def set_dirty(self, dirty: bool = True, paths: list[str] | None = None) -> None:
+        """Set whether the worktree reports local state, and at which paths.
+
+        ``paths`` names them, for tests that assert on the leak message. A
+        bare ``True`` reports one unnamed path, which is all a test needs when
+        it only cares that the worktree is not clean.
+        """
+        self._dirty_paths = (list(paths) if paths else ["dirty.txt"]) if dirty else []
 
     def set_diverged_from_remote(self, diverged: bool) -> None:
         """Model a local branch carrying commits the remote does not have.
@@ -187,9 +192,9 @@ class MockGitRepository(GitRepository):
         self._operations.append(f"is_ancestor: {ancestor} in {descendant}")
         return not self._diverged_from_remote
 
-    def is_dirty(self) -> bool:
-        """Whether the worktree holds local state a reset would destroy."""
-        return self._dirty
+    def dirty_paths(self) -> list[str]:
+        """Paths reported as holding local state a reset would destroy."""
+        return list(self._dirty_paths)
 
     def get_repo_root(self) -> Path:
         """Get the root directory of the git repository."""
