@@ -111,11 +111,17 @@ class GitRepository(ABC):
 
     @abstractmethod
     def create_commit(self, message: str, files: list[Path]) -> str:
-        """Create a commit with the specified files.
+        """Create a commit containing HEAD's tree with ``files`` applied.
+
+        ``files`` is exhaustive, not advisory: the commit's diff against its
+        parent must cover exactly these paths. Anything else already staged in
+        the worktree stays staged and uncommitted. A release commit is supposed
+        to read as "version bump + changelog (+ lock file)", and unrelated work
+        published under a ``release:`` message is work nobody will find again.
 
         Args:
             message: Commit message
-            files: List of file paths to stage and commit
+            files: The only paths this commit may change
 
         Returns:
             SHA of the created commit
