@@ -47,7 +47,8 @@ CLI (cli.py)
 ```
 
 **Key design decisions:**
-- `GitRepository` is an abstract interface — `PyGit2Repository` handles real git ops; `MockGitRepository` (in-memory) is used in all tests. Never instantiate a real git repo in tests.
+- `GitRepository` is an abstract interface — `PyGit2Repository` handles real git ops; `MockGitRepository` (in-memory) is used in all tests. Never instantiate a real git repo in tests, with one carve-out: `tests/git/test_pygit2_impl.py`, where the property under test *is* what real git records (commit tree contents, filemodes) and a mock would agree with any implementation.
+- `create_commit(message, files)` builds its tree from HEAD plus `files`, never from the index, so nothing a developer had staged can ride along in a release commit.
 - Data models (`models.py`) are frozen dataclasses — `Version`, `CommitInfo`, `ReleaseResult`.
 - Analysis modules (`commit_parser`, `version_calculator`) are pure functions with no side effects.
 - CLI exit codes: 0 = success, 1 = error, 2 = no changes needed, 3 = validation error,
@@ -103,5 +104,7 @@ the states `--push` must refuse:
 `add_release_arriving_on_fetch(commit, tag)` adds the winner's commit **and** tag. Registering a tag without its commit leaves `get_commits_since` unable to resolve it, so the mock reports all history as unreleased and a recomputed version passes for the wrong reason.
 
 Pass `sleep=lambda _: None` to `release_and_publish` in tests so the backoff does not slow the suite. See `tests/test_publish.py`.
+
+`tests/git/test_pygit2_impl.py` is the exception noted above: it creates repositories in `tmp_path` with `pygit2.init_repository` to check what a commit actually contains. Nothing there touches a remote.
 
 The `example/` directory contains a working package config that doubles as a manual integration test target.
