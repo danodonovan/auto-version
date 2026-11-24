@@ -1,7 +1,6 @@
 """Main release orchestration logic."""
 
 import random
-import subprocess
 import time
 from pathlib import Path
 from typing import Callable
@@ -230,20 +229,21 @@ class ReleaseOrchestrator:
                 "first."
             )
 
+        # Unborn repository: no commits, so there is nothing to release and
+        # nothing to roll back to. Asked before resolving HEAD rather than
+        # recovered from its failure afterwards — "has this repository been
+        # committed to" is a question the git layer can answer directly, and
+        # reading it out of a rev-parse failure meant this file knew git was
+        # shelled out to and matched its English. (Usually the dirty-worktree
+        # check catches this first, since an unborn repo's files are
+        # untracked — but not if they are ignored.)
+        if not self.repo.has_commits():
+            return self.release(dry_run=False)
+
         # The commit publishing starts from. A retry may only reset onto a tip
         # that already contains it, so the reset can never discard more than
         # this method created.
-        try:
-            base_sha = self.repo.resolve("HEAD")
-        except Exception as exc:
-            if not self._is_unborn_head_error(exc):
-                raise
-            # Unborn repository: no commits, so there is nothing to release
-            # and nothing to roll back to. Let release() report that the
-            # normal way instead of surfacing a rev-parse failure. (Usually
-            # the dirty-worktree check catches this first, since an unborn
-            # repo's files are untracked — but not if they are ignored.)
-            return self.release(dry_run=False)
+        base_sha = self.repo.resolve("HEAD")
 
         def reset_to(target: str, result: ReleaseResult) -> None:
             """``reset_keep(target)``, restoring the release's tag if it fails.
@@ -386,26 +386,6 @@ class ReleaseOrchestrator:
     def _backoff(attempt: int) -> float:
         """Jittered backoff so racing jobs do not retry in lockstep."""
         return random.uniform(0.0, min(2.0**attempt, 8.0))
-
-    @staticmethod
-    def _is_unborn_head_error(exc: Exception) -> bool:
-        """Whether ``exc`` is git's "HEAD has no commit yet" failure."""
-        if not isinstance(exc, subprocess.CalledProcessError):
-            return False
-        raw_cmd = exc.cmd if isinstance(exc.cmd, (list, tuple)) else [str(exc.cmd)]
-        cmd = [str(part).lower() for part in raw_cmd]
-        if "rev-parse" not in cmd or "head" not in cmd:
-            return False
-        output = "\n".join(
-            part
-            for part in (exc.stderr, exc.output)
-            if isinstance(part, str) and part.strip()
-        ).lower()
-        return (
-            "needed a single revision" in output
-            or "unknown revision or path not in the working tree" in output
-            or "ambiguous argument 'head'" in output
-        )
 
     def get_latest_version(self) -> Version | None:
         """Return the latest released version (PEP 440 ordered), or None if untagged.

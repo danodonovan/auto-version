@@ -418,6 +418,20 @@ class PyGit2Repository(GitRepository):
             f"{completed.stderr.strip()}"
         )
 
+    def has_commits(self) -> bool:
+        """Whether the repository has any commit yet.
+
+        ``head_is_unborn`` is the same question ``get_current_branch`` already
+        asks, answered by libgit2 rather than by running ``rev-parse`` and
+        classifying its failure: an unborn HEAD is a ref pointing at a branch
+        that does not exist yet, which is a fact about the repository, not a
+        wording in git's stderr. Anything else wrong with HEAD raises
+        ``GitError`` from here, which is what should happen — a damaged
+        repository reported as an empty one would release nothing and say
+        nothing.
+        """
+        return not self._repo.head_is_unborn
+
     def resolve(self, ref: str) -> str:
         """Resolve a ref to its commit SHA."""
         return self._run_git("rev-parse", ref).stdout.strip()
