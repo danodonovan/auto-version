@@ -2,6 +2,15 @@
 
 <!--next-version-placeholder-->
 
+## v0.2.1 (2026-11-24)
+### Fix
+* commit only the release's own files, not the whole index (#9) ([`924d0f8`](https://github.com/danodonovan/auto-version/commit/924d0f81c6e1bb5ad2edad32381123bd0efa11a3))
+* catch build-command leaks before the first push (#10) ([`4f3e3db`](https://github.com/danodonovan/auto-version/commit/4f3e3db5a03fc13050421cd670dc3b312f3018c7))
+### Other
+* add has_commits() and drop the stderr-matched unborn-HEAD check (#8) ([`f6b1fdf`](https://github.com/danodonovan/auto-version/commit/f6b1fdfe8213e60d11a77524b580a7af0210d4ba))
+* have auto-version release itself with release --push (#11) ([`2964856`](https://github.com/danodonovan/auto-version/commit/29648561abb575b23e6a2c3a749c8763b093a0d0))
+
+
 ## v0.2.0 (2026-09-16)
 ### Feature
 * publish releases atomically with --push, recomputing on a rejected push (#2) ([`607ccd7`](https://github.com/danodonovan/auto-version/commit/607ccd789a1234210484fd49bb91f84b5f4ff531))
