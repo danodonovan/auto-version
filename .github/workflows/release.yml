@@ -1,0 +1,73 @@
+# auto-version releases itself.
+#
+# The tool being run is the one built from the commit under test (`pip install
+# -e .`), not the previous tag: otherwise a fix to the release path would never
+# be exercised by the release that ships it.
+name: release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  # Queue release runs rather than overlap them. `release --push` is built to
+  # survive a lost race, but there is nothing to gain from provoking one, and
+  # cancelling would abandon a release halfway.
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: pytest tests/ -v
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history and tags: the version is derived from tags, and a
+          # shallow clone has none — the release would recompute from nothing.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -e .
+
+      - name: Identify the release author
+        # pygit2 signs the release commit with the repository's configured
+        # identity, and a fresh checkout has none.
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Release
+        # Exit 2 is "no releasable commits since the last tag", which is the
+        # normal outcome of a merge that only touched tests or docs config.
+        # Every other non-zero exit is a real failure.
+        #
+        # The release commit carries [skip ci], and GitHub does not re-trigger
+        # workflows for pushes made with GITHUB_TOKEN in any case, so this
+        # cannot loop.
+        run: |
+          set +e
+          auto-version release --push --branch main
+          status=$?
+          set -e
+          if [ "$status" -eq 2 ]; then
+            echo "Nothing to release."
+            exit 0
+          fi
+          exit "$status"

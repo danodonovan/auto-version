@@ -110,3 +110,9 @@ Pass `sleep=lambda _: None` to `release_and_publish` in tests so the backoff doe
 `tests/git/test_pygit2_impl.py` is the exception noted above: it creates repositories in `tmp_path` with `pygit2.init_repository` to check what a commit actually contains. Nothing there touches a remote.
 
 The `example/` directory contains a working package config that doubles as a manual integration test target.
+
+## Dogfooding
+
+This repository releases itself: `[tool.auto_version]` in its own `pyproject.toml` (bare `tag_format = "{version}"`, matching the tags already cut), and `.github/workflows/release.yml` running `auto-version release --push --branch main` on push to `main` after the tests pass. The tool is installed from the commit being released, so a change to the release path is exercised by the release that ships it. Exit 2 is treated as success by the workflow.
+
+Check any change to the release path against this repo with `auto-version release --dry-run --verbose` before pushing.

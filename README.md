@@ -90,6 +90,18 @@ cut `b1`, `b2`, … as commits land, then remove `prerelease_token` to graduate 
 > A release only happens when there are release-worthy commits. With no such commits,
 > `auto-version` exits `2` (no changes) in every mode, including the pre-release modes.
 
+## auto-version releases itself
+
+This repository is configured under `[tool.auto_version]` in its own
+`pyproject.toml`, and `.github/workflows/release.yml` runs
+`auto-version release --push --branch main` on every push to `main`. The tool
+is installed from the commit being released (`pip install -e .`), so a change
+to the release path is exercised by the release that ships it — and every
+release is a live end-to-end test of `--push` against a real remote.
+
+`CHANGELOG.md` was backfilled for `0.1.0` and `0.2.0`, which were tagged by
+hand before this was wired up.
+
 ## License
 
 MIT

@@ -29,6 +29,18 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/auto_version"]
 
+[tool.auto_version]
+# auto-version releases itself. tag_format matches the tags already on this
+# repository (0.1.0, 0.2.0) — bare versions, since there is only one package.
+tag_format = "{version}"
+version_toml = ["pyproject.toml:project.version"]
+path_filters = ["."]
+commit_message = "release: auto-version {version} [skip ci]"
+changelog_path = "CHANGELOG.md"
+github_repo = "danodonovan/auto-version"
+# No version_variables: __version__ reads the installed metadata, so there is
+# no second copy of the version to keep in step.
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
